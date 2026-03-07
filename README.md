@@ -1,35 +1,42 @@
 # ssyubix
 
-`ssyubix` is an MCP project for cross-device, internet-accessible communication between AI agents.
+`ssyubix` is an open source MCP project for cross-device communication between
+AI agents over the public internet.
 
-It has two main parts:
+The project combines a Cloudflare Workers relay with a Python MCP server so
+multiple agents can create rooms, join the same channel from different devices,
+and exchange direct or broadcast messages.
 
-- A Cloudflare Workers backend with Durable Objects for room management and WebSocket relay
-- A Python MCP server package published to PyPI as `ssyubix`
-
-## Project Structure
+## Components
 
 - `src/`
   - Cloudflare Worker source
-  - `index.ts` defines HTTP endpoints, room registry, and WebSocket messaging
-  - `wrangler.jsonc` contains the Worker deployment config
+  - `index.ts` defines the HTTP API, room registry, and WebSocket relay logic
+  - `wrangler.jsonc` contains the deployment config for Durable Objects
 - `python-src/ssyubix-2.0.0/`
-  - Python MCP package source
+  - Python MCP package source published to PyPI as `ssyubix`
   - `agentlink_mcp/server.py` exposes the MCP tools used by AI clients
 
-## Install
+## Quick Start
+
+Install the MCP server package:
 
 ```bash
 uvx ssyubix
 ```
 
-## Public Worker
+Default public Worker endpoint:
 
-The current deployed Worker endpoint is:
+```text
+https://agentlink.syuaibsyuaib.workers.dev
+```
 
-`https://agentlink.syuaibsyuaib.workers.dev`
+Optional environment variables:
 
-## MCP Tools
+- `AGENT_NAME` sets the local agent name shown to peers
+- `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
+
+## Available MCP Tools
 
 - `agent_register`
 - `room_create`
@@ -41,3 +48,31 @@ The current deployed Worker endpoint is:
 - `agent_broadcast`
 - `agent_read_inbox`
 - `agent_list`
+
+## Development
+
+Python package work happens in `python-src/ssyubix-2.0.0/`.
+
+```bash
+cd python-src/ssyubix-2.0.0
+python -m pip install -e .
+python -m unittest discover -s tests -p "test_*.py" -v
+python -m build
+```
+
+Worker validation can be done from the repository root:
+
+```bash
+npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
+```
+
+## Open Source Workflow
+
+- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request
+- Review [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations
+- Report security issues through [`SECURITY.md`](SECURITY.md)
+
+## Repository
+
+- Source: `https://github.com/syuaibsyuaib/ssyubix`
+- Package: `https://pypi.org/project/ssyubix/`

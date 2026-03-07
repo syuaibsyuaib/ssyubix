@@ -1,10 +1,7 @@
-# AgentLink MCP v2
+# ssyubix
 
-P2P realtime communication between Claude agents — powered by **Cloudflare Workers + Durable Objects**.
-
-## Tidak perlu tunnel, tidak perlu server sendiri.
-
-URL relay bersifat permanen dan gratis via Cloudflare edge.
+`ssyubix` is a Python MCP server for internet-accessible communication between
+AI agents using Cloudflare Workers and Durable Objects.
 
 ## Install
 
@@ -12,7 +9,7 @@ URL relay bersifat permanen dan gratis via Cloudflare edge.
 uvx ssyubix
 ```
 
-## Config Claude Desktop
+## Claude Desktop Example
 
 ```json
 {
@@ -28,17 +25,30 @@ uvx ssyubix
 }
 ```
 
-## Tools
+## Environment Variables
 
-| Tool | Fungsi |
-|------|--------|
-| `agent_register` | Daftar agent (tidak perlu tunnel!) |
-| `room_create` | Buat room public/private |
-| `room_join` | Join room |
-| `room_leave` | Keluar room |
-| `room_list` | Lihat room public aktif |
-| `room_info` | Info room saat ini |
-| `agent_send` | Kirim pesan ke 1 peer |
-| `agent_broadcast` | Broadcast ke semua peer |
-| `agent_read_inbox` | Baca pesan & event |
-| `agent_list` | Info agent & koneksi |
+- `AGENT_NAME`: optional display name for the current agent
+- `AGENTLINK_URL`: optional override for the default Worker endpoint
+
+Default Worker endpoint:
+
+```text
+https://agentlink.syuaibsyuaib.workers.dev
+```
+
+## Available Tools
+
+- `agent_register`
+- `room_create`
+- `room_join`
+- `room_leave`
+- `room_list`
+- `room_info`
+- `agent_send`
+- `agent_broadcast`
+- `agent_read_inbox`
+- `agent_list`
+
+## Source Repository
+
+`https://github.com/syuaibsyuaib/ssyubix`

@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/python-src/ssyubix-2.0.0"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
