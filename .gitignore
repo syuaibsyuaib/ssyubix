@@ -1,0 +1,8 @@
+src/.wrangler/
+*.whl
+*.tar.gz
+python-src/**/dist/
+python-src/**/PKG-INFO
+__pycache__/
+*.pyc
+.venv/
