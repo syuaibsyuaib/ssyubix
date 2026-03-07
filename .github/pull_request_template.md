@@ -12,5 +12,6 @@
 ## Checklist
 
 - [ ] Documentation updated when needed
+- [ ] Changelog updated for user-visible changes
 - [ ] No secrets, tokens, or caches included
 - [ ] Breaking changes called out explicitly

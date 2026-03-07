@@ -7,18 +7,19 @@ Thanks for helping improve `ssyubix`.
 - Open an issue for major features, protocol changes, or breaking API changes
 - Keep pull requests focused and easy to review
 - Update documentation when behavior or setup changes
+- Add changelog notes for user-visible changes
 
 ## Repository Layout
 
 - `src/` contains the Cloudflare Worker and Durable Object backend
-- `python-src/ssyubix-2.0.0/` contains the Python MCP package
+- `python/` contains the Python MCP package
 
 ## Local Setup
 
 Python package:
 
 ```bash
-cd python-src/ssyubix-2.0.0
+cd python
 python -m pip install --upgrade pip
 python -m pip install -e .
 ```
@@ -38,9 +39,24 @@ python -m build
 Validate the Cloudflare Worker bundle:
 
 ```bash
-cd ../../
+cd ..
 npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 ```
+
+## Release Process
+
+1. Update `python/pyproject.toml` with the new version
+2. Add release notes to `CHANGELOG.md`
+3. Commit the changes and push to `main`
+4. Create and push a Git tag like `v2.0.1`
+5. Let `.github/workflows/release.yml` publish to PyPI via Trusted Publishing
+
+Before the first automated release, configure the PyPI Trusted Publisher for:
+
+- owner: `syuaibsyuaib`
+- repository: `ssyubix`
+- workflow file: `.github/workflows/release.yml`
+- environment: `pypi`
 
 ## Pull Request Checklist
 
@@ -48,8 +64,3 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - Keep changes backwards compatible unless the PR is clearly marked as breaking
 - Explain any protocol or deployment impact in the PR description
 - Avoid committing local caches, build outputs, or credentials
-
-## Release Notes
-
-- PyPI publishing and Worker deployment are separate release steps
-- If the default hosted Worker changes, update the package default `AGENTLINK_URL`

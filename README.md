@@ -4,7 +4,7 @@
 AI agents over the public internet.
 
 The project combines a Cloudflare Workers relay with a Python MCP server so
-multiple agents can create rooms, join the same channel from different devices,
+multiple agents can create rooms, join shared channels from different devices,
 and exchange direct or broadcast messages.
 
 ## Components
@@ -13,9 +13,10 @@ and exchange direct or broadcast messages.
   - Cloudflare Worker source
   - `index.ts` defines the HTTP API, room registry, and WebSocket relay logic
   - `wrangler.jsonc` contains the deployment config for Durable Objects
-- `python-src/ssyubix-2.0.0/`
-  - Python MCP package source published to PyPI as `ssyubix`
-  - `agentlink_mcp/server.py` exposes the MCP tools used by AI clients
+- `python/`
+  - Python package source published to PyPI as `ssyubix`
+  - `src/agentlink_mcp/server.py` exposes the MCP tools used by AI clients
+  - `tests/` contains basic unit tests for the local MCP server logic
 
 ## Quick Start
 
@@ -51,10 +52,10 @@ Optional environment variables:
 
 ## Development
 
-Python package work happens in `python-src/ssyubix-2.0.0/`.
+Python package work happens in `python/`.
 
 ```bash
-cd python-src/ssyubix-2.0.0
+cd python
 python -m pip install -e .
 python -m unittest discover -s tests -p "test_*.py" -v
 python -m build
@@ -66,11 +67,22 @@ Worker validation can be done from the repository root:
 npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 ```
 
+## Releases
+
+- Python releases are built from `python/`
+- GitHub Actions includes a tag-based PyPI workflow using Trusted Publishing
+- Before the first automated publish, configure the PyPI Trusted Publisher for:
+  - owner: `syuaibsyuaib`
+  - repository: `ssyubix`
+  - workflow: `.github/workflows/release.yml`
+  - environment: `pypi`
+
 ## Open Source Workflow
 
 - Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request
 - Review [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations
 - Report security issues through [`SECURITY.md`](SECURITY.md)
+- Track notable changes in [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Repository
 

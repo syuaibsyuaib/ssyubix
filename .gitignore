@@ -1,8 +1,11 @@
 src/.wrangler/
+python/dist/
+python/*.egg-info/
+python/.venv/
 *.whl
 *.tar.gz
-python-src/**/dist/
-python-src/**/PKG-INFO
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
 .venv/

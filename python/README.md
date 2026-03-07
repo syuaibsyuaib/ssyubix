@@ -49,6 +49,14 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `agent_read_inbox`
 - `agent_list`
 
+## Development
+
+```bash
+python -m pip install -e .
+python -m unittest discover -s tests -p "test_*.py" -v
+python -m build
+```
+
 ## Source Repository
 
 `https://github.com/syuaibsyuaib/ssyubix`

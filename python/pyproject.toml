@@ -38,6 +38,7 @@ ssyubix = "agentlink_mcp.server:main"
 Homepage = "https://github.com/syuaibsyuaib/ssyubix"
 Repository = "https://github.com/syuaibsyuaib/ssyubix"
 Issues = "https://github.com/syuaibsyuaib/ssyubix/issues"
+Changelog = "https://github.com/syuaibsyuaib/ssyubix/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentlink_mcp"]
+packages = ["src/agentlink_mcp"]
