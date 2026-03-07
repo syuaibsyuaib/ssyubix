@@ -60,7 +60,7 @@ export default {
     if (path === "/" && request.method === "GET") {
       return Response.json({
         name: "AgentLink",
-        version: "2.0.0",
+        version: "2.0.1",
         backend: "Cloudflare Workers + Durable Objects",
         endpoints: {
           list_rooms: "GET /rooms",
