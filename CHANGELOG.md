@@ -13,12 +13,14 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Added a local retry queue and offline checkpoint path for outbound `send` and `broadcast` actions
 - Added local room summary snapshots plus the `room_local_summary` tool for offline room inspection
 - Added architecture documentation for the local-first transient state and WebSocket hibernation strategy
+- Added local cache retention and corrupt-cache quarantine controls for the Python MCP client
 
 ### Fixed
 
 - Reduced Durable Object presence writes by checkpointing session state on coarse boundaries instead of every heartbeat
 - Rehydrated active room sessions from WebSocket attachments so reconnect and peer snapshots stay correct after hibernation
 - Batched transient room session checkpoints into a room-level durable manifest instead of per-session writes during active traffic
+- Compacted duplicate local inbox entries and dropped stale room cache files instead of restoring outdated snapshots
 
 ## [2.0.3] - 2026-03-08
 

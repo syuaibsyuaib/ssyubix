@@ -2,6 +2,8 @@ import unittest
 import asyncio
 import json
 import tempfile
+import os
+import time
 from pathlib import Path
 
 from agentlink_mcp import server
@@ -180,6 +182,9 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.original_retry_replay_task = server.retry_replay_task
         self.original_pending = dict(server.pending_acks)
         self.original_await_ack = server._await_ack
+        self.original_room_cache_ttl = server.LOCAL_ROOM_CACHE_TTL_SECONDS
+        self.original_room_cache_limit = server.LOCAL_ROOM_CACHE_LIMIT
+        self.original_corrupt_cache_limit = server.LOCAL_CORRUPT_CACHE_LIMIT
         self.tempdir = tempfile.TemporaryDirectory()
         server.local_state_dir = Path(self.tempdir.name)
         server.agent_id = "LOCAL123"
@@ -199,6 +204,9 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         server.pending_acks.clear()
         server.pending_acks.update(self.original_pending)
         server._await_ack = self.original_await_ack
+        server.LOCAL_ROOM_CACHE_TTL_SECONDS = self.original_room_cache_ttl
+        server.LOCAL_ROOM_CACHE_LIMIT = self.original_room_cache_limit
+        server.LOCAL_CORRUPT_CACHE_LIMIT = self.original_corrupt_cache_limit
         self.tempdir.cleanup()
 
     def test_persist_and_restore_local_room_cache(self):
@@ -568,6 +576,108 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(summary["is_stale"])
         self.assertGreater(summary["age_seconds"], 0)
+
+    def test_load_local_room_state_quarantines_corrupt_cache(self):
+        cache_path = server._room_cache_path("ROOM42")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("{invalid json", encoding="utf-8")
+
+        cached = server._load_local_room_state("ROOM42")
+
+        self.assertFalse(cached["restored"])
+        self.assertTrue(cached["recovered_from_corrupt_cache"])
+        self.assertIsNotNone(cached["corrupt_cache_path"])
+        self.assertFalse(cache_path.exists())
+        self.assertTrue(Path(cached["corrupt_cache_path"]).exists())
+
+    def test_restore_local_room_state_compacts_duplicate_messages(self):
+        payload = {
+            "version": server.LOCAL_STATE_VERSION,
+            "server": server.AGENTLINK_URL,
+            "room_id": "ROOM42",
+            "cached_at": "2026-03-09T00:00:05+00:00",
+            "last_sequence": 3,
+            "last_read_sequence": 1,
+            "messages": [
+                {
+                    "type": "message",
+                    "from": "peer-one",
+                    "agent_id": "PEER1",
+                    "content": "hello",
+                    "msg_type": "text",
+                    "broadcast": False,
+                    "message_id": "ROOM42:2",
+                    "sequence": 2,
+                    "room_id": "ROOM42",
+                    "timestamp": "2026-03-09T00:00:02+00:00",
+                },
+                {
+                    "type": "message",
+                    "from": "peer-one",
+                    "agent_id": "PEER1",
+                    "content": "hello duplicate",
+                    "msg_type": "text",
+                    "broadcast": False,
+                    "message_id": "ROOM42:2",
+                    "sequence": 2,
+                    "room_id": "ROOM42",
+                    "timestamp": "2026-03-09T00:00:02+00:00",
+                },
+                {
+                    "type": "event",
+                    "event": "agent_joined",
+                    "from": "peer-two",
+                    "agent_id": "PEER2",
+                    "message_id": "ROOM42:3",
+                    "sequence": 3,
+                    "room_id": "ROOM42",
+                    "timestamp": "2026-03-09T00:00:03+00:00",
+                },
+                "bad-entry",
+            ],
+            "retry_queue": [],
+            "summary": {},
+        }
+        server._write_json_file(server._room_cache_path("ROOM42"), payload)
+        server.current_room = {"room_id": "ROOM42", "last_sequence": 3}
+        server.inbox[:] = []
+
+        server._restore_local_room_state("ROOM42")
+
+        self.assertEqual(len(server.inbox), 2)
+        self.assertEqual(server.inbox[0]["message_id"], "ROOM42:2")
+        self.assertEqual(server.inbox[1]["message_id"], "ROOM42:3")
+
+    def test_prune_local_cache_files_removes_stale_and_overflow_entries(self):
+        server.LOCAL_ROOM_CACHE_TTL_SECONDS = 3600
+        server.LOCAL_ROOM_CACHE_LIMIT = 1
+
+        room_a = server._room_cache_path("ROOMA")
+        room_b = server._room_cache_path("ROOMB")
+        room_c = server._room_cache_path("ROOMC")
+        for index, room_path in enumerate([room_a, room_b, room_c], start=1):
+            server._write_json_file(room_path, {
+                "version": server.LOCAL_STATE_VERSION,
+                "server": server.AGENTLINK_URL,
+                "room_id": room_path.stem,
+                "cached_at": "2026-03-09T00:00:00+00:00",
+                "last_sequence": index,
+                "last_read_sequence": 0,
+                "messages": [],
+                "retry_queue": [],
+                "summary": {},
+            })
+
+        now = time.time()
+        os.utime(room_a, (now - 7200, now - 7200))
+        os.utime(room_b, (now - 200, now - 200))
+        os.utime(room_c, (now - 100, now - 100))
+
+        server._prune_local_cache_files()
+
+        self.assertFalse(room_a.exists())
+        self.assertFalse(room_b.exists())
+        self.assertTrue(room_c.exists())
 
 
 if __name__ == "__main__":
