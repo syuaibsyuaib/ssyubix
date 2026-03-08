@@ -171,6 +171,21 @@ class AckHandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["message_id"], "ROOM42:9")
         self.assertTrue(result["delivered"])
 
+    async def test_error_with_request_id_rejects_pending_future(self):
+        future = asyncio.get_running_loop().create_future()
+        server.pending_acks["REQERR"] = future
+
+        server._handle_incoming(
+            {
+                "type": "error",
+                "request_id": "REQERR",
+                "error": "invalid capability update",
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "invalid capability update"):
+            await future
+
 
 class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -757,6 +772,123 @@ class CapabilityResourceTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Token salah"):
             await server._fetch_capability_resource("ROOM42", "agents")
+
+
+class CapabilityToolTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.original_current_room = server.current_room
+        self.original_ws_conn = server.ws_conn
+        self.original_agent_id = server.agent_id
+        self.original_await_ack = server._await_ack
+        self.original_fetch_self = server._fetch_self_capability_profile
+        server.current_room = {"room_id": "ROOM42"}
+        server.ws_conn = object()
+        server.agent_id = "SELF1234"
+
+    def tearDown(self):
+        server.current_room = self.original_current_room
+        server.ws_conn = self.original_ws_conn
+        server.agent_id = self.original_agent_id
+        server._await_ack = self.original_await_ack
+        server._fetch_self_capability_profile = self.original_fetch_self
+
+    async def test_capability_upsert_self_returns_updated_profile(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "capability_upsert")
+            self.assertEqual(payload["summary"], "Codes and reviews")
+            return "REQ123", {
+                "accepted": True,
+                "message_id": "ROOM42:9",
+                "sequence": 9,
+            }
+
+        async def fake_fetch_self():
+            return {
+                "success": True,
+                "room_id": "ROOM42",
+                "agent": {
+                    "agent_id": "SELF1234",
+                    "summary": "Codes and reviews",
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_self_capability_profile = fake_fetch_self
+
+        payload = json.loads(
+            await server.capability_upsert_self(
+                server.CapabilityUpsertInput(summary="Codes and reviews")
+            )
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["my_agent_id"], "SELF1234")
+        self.assertEqual(payload["agent"]["summary"], "Codes and reviews")
+        self.assertEqual(payload["resource_uri"], "ssyubix://rooms/ROOM42/agents/SELF1234")
+
+    async def test_capability_set_availability_updates_via_room_ack(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "capability_set_availability")
+            self.assertEqual(payload["availability"], "busy")
+            self.assertEqual(payload["current_load"], 2)
+            return "REQ124", {
+                "accepted": True,
+                "message_id": "ROOM42:10",
+                "sequence": 10,
+            }
+
+        async def fake_fetch_self():
+            return {
+                "success": True,
+                "room_id": "ROOM42",
+                "agent": {
+                    "agent_id": "SELF1234",
+                    "availability": "busy",
+                    "current_load": 2,
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_self_capability_profile = fake_fetch_self
+
+        payload = json.loads(
+            await server.capability_set_availability(
+                server.CapabilityAvailabilityInput(availability="busy", current_load=2)
+            )
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["agent"]["availability"], "busy")
+        self.assertEqual(payload["agent"]["current_load"], 2)
+
+    async def test_capability_remove_self_returns_fallback_profile(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "capability_remove")
+            return "REQ125", {
+                "accepted": True,
+                "message_id": "ROOM42:11",
+                "sequence": 11,
+            }
+
+        async def fake_fetch_self():
+            return {
+                "success": True,
+                "room_id": "ROOM42",
+                "agent": {
+                    "agent_id": "SELF1234",
+                    "summary": "",
+                    "skills": [],
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_self_capability_profile = fake_fetch_self
+
+        payload = json.loads(await server.capability_remove_self())
+
+        self.assertTrue(payload["success"])
+        self.assertIn("kustom dihapus", payload["message"])
+        self.assertEqual(payload["agent"]["skills"], [])
 
 
 if __name__ == "__main__":

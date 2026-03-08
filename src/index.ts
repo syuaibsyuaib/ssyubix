@@ -12,11 +12,15 @@
 import { DurableObject } from "cloudflare:workers";
 
 import {
+  applyCapabilityProfilePatch,
   buildCapabilitySkillIndex,
+  CAPABILITY_AVAILABILITY_VALUES,
   createCapabilityRegistryManifest,
   listCapabilityProfiles,
+  removeCapabilityProfile,
   ROOM_CAPABILITY_REGISTRY_KEY,
   upsertCapabilityProfile,
+  validateCapabilityProfilePatch,
   type CapabilityPresenceOverlay,
   type CapabilityRegistryManifest,
 } from "./capability-registry";
@@ -62,7 +66,17 @@ interface AgentSessionState extends StoredRoomSession {
 }
 
 interface WsMessage {
-  type: "send" | "broadcast" | "ping" | "pong" | "message" | "event" | "info";
+  type:
+    | "send"
+    | "broadcast"
+    | "ping"
+    | "pong"
+    | "message"
+    | "event"
+    | "info"
+    | "capability_upsert"
+    | "capability_set_availability"
+    | "capability_remove";
   [key: string]: unknown;
 }
 
@@ -445,6 +459,122 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
+    if (msg.type === "capability_upsert") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const validation = validateCapabilityProfilePatch({
+        summary: msg.summary,
+        version: msg.version,
+        tool_access: msg.tool_access,
+        constraints: msg.constraints,
+        max_concurrent_tasks: msg.max_concurrent_tasks,
+        current_load: msg.current_load,
+        skills: msg.skills,
+      });
+      if (!validation.ok || !validation.patch) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: validation.errors.join(" "),
+          request_id: requestId,
+          code: "invalid_capability_profile",
+          allowed_availability: [...CAPABILITY_AVAILABILITY_VALUES],
+        }));
+        return;
+      }
+
+      const { changed } = await this.applyCapabilityMutation(agentState, {
+        patch: validation.patch,
+        timestamp,
+      });
+      const sequence = await this.broadcastCapabilityChange(ws, {
+        agentState,
+        timestamp,
+        event: "capability_updated",
+        changed,
+      });
+
+      ws.send(JSON.stringify(createAck({
+        action: "capability_upsert",
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        sequence: sequence ?? undefined,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+      })));
+      return;
+    }
+
+    if (msg.type === "capability_set_availability") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const validation = validateCapabilityProfilePatch({
+        availability: msg.availability,
+        current_load: msg.current_load,
+      }, {
+        allowAvailability: true,
+        availabilityOnly: true,
+      });
+      if (!validation.ok || !validation.patch) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: validation.errors.join(" "),
+          request_id: requestId,
+          code: "invalid_capability_availability",
+          allowed_availability: [...CAPABILITY_AVAILABILITY_VALUES],
+        }));
+        return;
+      }
+
+      const { changed } = await this.applyCapabilityMutation(agentState, {
+        patch: validation.patch,
+        timestamp,
+      });
+      const sequence = await this.broadcastCapabilityChange(ws, {
+        agentState,
+        timestamp,
+        event: "capability_updated",
+        changed,
+      });
+
+      ws.send(JSON.stringify(createAck({
+        action: "capability_set_availability",
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        sequence: sequence ?? undefined,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+      })));
+      return;
+    }
+
+    if (msg.type === "capability_remove") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const removed = await this.removeStoredCapabilityProfile(agentState.agent_id, timestamp);
+      const sequence = await this.broadcastCapabilityChange(ws, {
+        agentState,
+        timestamp,
+        event: "capability_removed",
+        changed: removed,
+      });
+
+      ws.send(JSON.stringify(createAck({
+        action: "capability_remove",
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        sequence: sequence ?? undefined,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+      })));
+      return;
+    }
+
     ws.send(JSON.stringify({
       type: "error",
       error: `Unknown type: ${msg.type}`,
@@ -625,6 +755,68 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
     await this.ctx.storage.put(ROOM_CAPABILITY_REGISTRY_KEY, manifest);
+  }
+
+  private async applyCapabilityMutation(
+    agentState: AgentSessionState,
+    params: {
+      patch: Parameters<typeof applyCapabilityProfilePatch>[1]["patch"];
+      timestamp: string;
+    },
+  ) {
+    const manifest = await this.loadCapabilityRegistryManifest(params.timestamp);
+    const result = applyCapabilityProfilePatch(manifest, {
+      agentId: agentState.agent_id,
+      displayName: agentState.name,
+      presence: agentState.presence,
+      joinedAt: agentState.joined_at,
+      lastSeenAt: agentState.last_seen_at,
+      updatedAt: params.timestamp,
+      patch: params.patch,
+    });
+    if (result.changed) {
+      await this.ctx.storage.put(ROOM_CAPABILITY_REGISTRY_KEY, manifest);
+    }
+    return result;
+  }
+
+  private async removeStoredCapabilityProfile(
+    agentId: string,
+    timestamp: string,
+  ): Promise<boolean> {
+    const manifest = await this.loadCapabilityRegistryManifest(timestamp);
+    const changed = removeCapabilityProfile(manifest, agentId, timestamp);
+    if (changed) {
+      await this.ctx.storage.put(ROOM_CAPABILITY_REGISTRY_KEY, manifest);
+    }
+    return changed;
+  }
+
+  private async broadcastCapabilityChange(
+    sender: WebSocket,
+    params: {
+      agentState: AgentSessionState;
+      timestamp: string;
+      event: "capability_updated" | "capability_removed";
+      changed: boolean;
+    },
+  ): Promise<number | null> {
+    if (!params.changed) {
+      return null;
+    }
+    const sequence = await this.nextSequence();
+    this.broadcast(sender, JSON.stringify(createRoomEvent({
+      roomId: params.agentState.room_id,
+      sequence,
+      timestamp: params.timestamp,
+      event: params.event,
+      agentId: params.agentState.agent_id,
+      name: params.agentState.name,
+      presence: params.agentState.presence,
+      joinedAt: params.agentState.joined_at,
+      lastSeenAt: params.agentState.last_seen_at,
+    })));
+    return sequence;
   }
 
   private async maybeCheckpointSessionState(ws: WebSocket, params: {
