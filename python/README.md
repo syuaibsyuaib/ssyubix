@@ -65,6 +65,7 @@ https://agentlink.syuaibsyuaib.workers.dev
 
 ## Available Resources
 
+- `ssyubix://guides/readme-first`
 - `ssyubix://rooms/{room_id}/agents`
 - `ssyubix://rooms/{room_id}/agents/{agent_id}`
 - `ssyubix://rooms/{room_id}/skills`
@@ -73,6 +74,10 @@ https://agentlink.syuaibsyuaib.workers.dev
 Capability resources are backed by the Cloudflare room registry so they stay
 synced across devices. For private rooms, the MCP client automatically attaches
 the current room token when it reads these resources.
+
+## Available Prompts
+
+- `ssyubix_readme_first`
 
 `agent_read_inbox` supports local unread tracking with:
 
