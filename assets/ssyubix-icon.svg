@@ -1,0 +1,36 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="88" y1="72" x2="424" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101726"/>
+      <stop offset="1" stop-color="#1F2937"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="160" y1="136" x2="352" y2="384" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDBA74"/>
+      <stop offset="0.48" stop-color="#F97316"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <linearGradient id="node" x1="142" y1="136" x2="380" y2="376" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="glow" x="112" y="104" width="288" height="304" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="164" stroke="white" stroke-opacity="0.08" stroke-width="20"/>
+  <circle cx="256" cy="256" r="112" stroke="white" stroke-opacity="0.05" stroke-width="12"/>
+  <path d="M156 162L228 214M284 298L356 350M348 164L284 214M156 350L228 298" stroke="white" stroke-opacity="0.14" stroke-width="10" stroke-linecap="round"/>
+  <g filter="url(#glow)">
+    <path d="M344 160C313 132 261 132 224 158C186 185 183 235 223 253C257 269 308 274 323 308C340 348 304 387 252 387C214 387 184 370 165 349" stroke="url(#signal)" stroke-width="26" stroke-linecap="round"/>
+  </g>
+  <path d="M344 160C313 132 261 132 224 158C186 185 183 235 223 253C257 269 308 274 323 308C340 348 304 387 252 387C214 387 184 370 165 349" stroke="url(#signal)" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="348" cy="160" r="28" fill="url(#node)"/>
+  <circle cx="228" cy="214" r="22" fill="url(#node)"/>
+  <circle cx="284" cy="298" r="22" fill="url(#node)"/>
+  <circle cx="156" cy="350" r="28" fill="url(#node)"/>
+  <circle cx="348" cy="160" r="10" fill="#F8FAFC"/>
+  <circle cx="228" cy="214" r="8" fill="#F8FAFC"/>
+  <circle cx="284" cy="298" r="8" fill="#F8FAFC"/>
+  <circle cx="156" cy="350" r="10" fill="#F8FAFC"/>
+</svg>
