@@ -75,6 +75,12 @@ Worker validation can be done from the repository root:
 npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 ```
 
+## Architecture Notes
+
+- [`docs/local-first-hibernation-strategy.md`](docs/local-first-hibernation-strategy.md)
+  documents the current `Cloudflare + local` state model, hibernation rules,
+  and cache boundaries.
+
 ## Releases
 
 - Python releases are built from `python/`
