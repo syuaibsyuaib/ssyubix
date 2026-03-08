@@ -16,9 +16,11 @@ import {
   buildHeartbeatConfig,
   shouldCheckpointPresence,
   shouldHydrateActiveSessions,
+  shouldPruneSessionCheckpoint,
   toHydratedPresenceState,
   shouldResumeSession,
   toPresenceSnapshot,
+  TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS,
   type AgentPresenceSnapshot,
   type StoredRoomSession,
 } from "./presence";
@@ -54,6 +56,13 @@ interface WsMessage {
   type: "send" | "broadcast" | "ping" | "pong" | "message" | "event" | "info";
   [key: string]: unknown;
 }
+
+interface RoomSessionCheckpointManifest {
+  updated_at: string;
+  sessions: Record<string, StoredRoomSession>;
+}
+
+const ROOM_SESSION_CHECKPOINTS_KEY = "room:session-checkpoints";
 
 // ─── Worker Entry ─────────────────────────────────────────────────────────────
 
@@ -417,6 +426,11 @@ export class AgentLinkRoom extends DurableObject {
     ws.close(1011, "Internal error");
   }
 
+  async alarm(): Promise<void> {
+    const now = new Date().toISOString();
+    await this.flushTransientSessionCheckpoints(now);
+  }
+
   private async getCurrentSequence(): Promise<number> {
     if (this.sequenceCounter === null) {
       this.sequenceCounter = (await this.ctx.storage.get<number>("room:sequence")) ?? 0;
@@ -510,16 +524,11 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
-    const stored: StoredRoomSession = {
-      session_id: state.session_id,
-      agent_id: state.agent_id,
-      name: state.name,
-      joined_at: state.joined_at,
-      last_seen_at: state.last_seen_at,
-      presence: state.presence,
-      checkpointed_at: state.checkpointed_at,
-    };
-    await this.ctx.storage.put(`session:${state.session_id}`, stored);
+    const manifest = await this.loadSessionCheckpointManifest();
+    manifest.sessions[state.session_id] = this.toStoredSession(state);
+    this.pruneExpiredSessionCheckpoints(manifest, state.last_seen_at);
+    manifest.updated_at = state.last_seen_at;
+    await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
   }
 
   private async maybeCheckpointSessionState(ws: WebSocket, params: {
@@ -534,6 +543,11 @@ export class AgentLinkRoom extends DurableObject {
       previousPresence: params.previousState.presence,
       force: params.force,
     })) {
+      return params.nextState;
+    }
+
+    if (!params.force) {
+      await this.scheduleTransientCheckpoint(params.nextState.last_seen_at);
       return params.nextState;
     }
 
@@ -554,17 +568,72 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
+    let shouldScheduleCheckpoint = false;
     for (const ws of this.ctx.getWebSockets()) {
       const previousState = this.readAgentState(ws);
       const nextState = toHydratedPresenceState(previousState, now);
       this.writeAgentState(ws, nextState);
-      await this.maybeCheckpointSessionState(ws, {
-        previousState,
-        nextState,
+      shouldScheduleCheckpoint ||= shouldCheckpointPresence({
+        lastCheckpointAt: nextState.checkpointed_at,
+        nextLastSeenAt: nextState.last_seen_at,
+        nextPresence: nextState.presence,
+        previousPresence: previousState.presence,
       });
     }
 
+    if (shouldScheduleCheckpoint) {
+      await this.scheduleTransientCheckpoint(now);
+    }
+
     this.lastHydratedAt = now;
+  }
+
+  private async scheduleTransientCheckpoint(now: string): Promise<void> {
+    const dueAt = Date.parse(now) + TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS * 1000;
+    const existingAlarm = await this.ctx.storage.getAlarm();
+    if (existingAlarm !== null && existingAlarm <= dueAt) {
+      return;
+    }
+    await this.ctx.storage.setAlarm(dueAt);
+  }
+
+  private async flushTransientSessionCheckpoints(now: string): Promise<void> {
+    const manifest = await this.loadSessionCheckpointManifest();
+    let changed = false;
+
+    for (const ws of this.ctx.getWebSockets()) {
+      const state = this.readAgentState(ws);
+      const stored = manifest.sessions[state.session_id];
+      const shouldPersist =
+        !stored ||
+        shouldCheckpointPresence({
+          lastCheckpointAt: stored?.checkpointed_at ?? state.checkpointed_at,
+          nextLastSeenAt: state.last_seen_at,
+          nextPresence: state.presence,
+          previousPresence: stored?.presence ?? state.presence,
+        });
+
+      if (!shouldPersist) {
+        continue;
+      }
+
+      const persistedState: AgentSessionState = {
+        ...state,
+        checkpointed_at: state.last_seen_at,
+      };
+      this.writeAgentState(ws, persistedState);
+      manifest.sessions[persistedState.session_id] = this.toStoredSession(persistedState);
+      changed = true;
+    }
+
+    changed = this.pruneExpiredSessionCheckpoints(manifest, now) || changed;
+
+    if (!changed) {
+      return;
+    }
+
+    manifest.updated_at = now;
+    await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
   }
 
   private findActiveSession(
@@ -588,6 +657,78 @@ export class AgentLinkRoom extends DurableObject {
     return null;
   }
 
+  private toStoredSession(state: AgentSessionState): StoredRoomSession {
+    return {
+      session_id: state.session_id,
+      agent_id: state.agent_id,
+      name: state.name,
+      joined_at: state.joined_at,
+      last_seen_at: state.last_seen_at,
+      presence: state.presence,
+      checkpointed_at: state.checkpointed_at,
+    };
+  }
+
+  private async loadSessionCheckpointManifest(): Promise<RoomSessionCheckpointManifest> {
+    const stored =
+      (await this.ctx.storage.get<RoomSessionCheckpointManifest>(ROOM_SESSION_CHECKPOINTS_KEY)) ??
+      {
+        updated_at: new Date().toISOString(),
+        sessions: {},
+      };
+
+    return {
+      updated_at: typeof stored.updated_at === "string"
+        ? stored.updated_at
+        : new Date().toISOString(),
+      sessions: typeof stored.sessions === "object" && stored.sessions
+        ? stored.sessions
+        : {},
+    };
+  }
+
+  private pruneExpiredSessionCheckpoints(
+    manifest: RoomSessionCheckpointManifest,
+    now: string,
+  ): boolean {
+    let changed = false;
+    for (const [sessionId, stored] of Object.entries(manifest.sessions)) {
+      if (this.findActiveSession(sessionId)) {
+        continue;
+      }
+      if (shouldPruneSessionCheckpoint({ session: stored, now })) {
+        delete manifest.sessions[sessionId];
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private async getStoredSession(sessionId: string, now: string): Promise<StoredRoomSession | null> {
+    const manifest = await this.loadSessionCheckpointManifest();
+    const fromManifest = manifest.sessions[sessionId];
+    if (fromManifest) {
+      if (shouldPruneSessionCheckpoint({ session: fromManifest, now })) {
+        delete manifest.sessions[sessionId];
+        manifest.updated_at = now;
+        await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
+        return null;
+      }
+      return fromManifest;
+    }
+
+    const legacy = await this.ctx.storage.get<StoredRoomSession>(`session:${sessionId}`);
+    if (!legacy) {
+      return null;
+    }
+
+    if (shouldPruneSessionCheckpoint({ session: legacy, now })) {
+      return null;
+    }
+
+    return legacy;
+  }
+
   private async resolveSession(params: {
     sessionId: string;
     agentName: string;
@@ -602,9 +743,7 @@ export class AgentLinkRoom extends DurableObject {
       };
     }
 
-    const stored = await this.ctx.storage.get<StoredRoomSession>(
-      `session:${params.sessionId}`,
-    );
+    const stored = await this.getStoredSession(params.sessionId, params.now);
 
     if (
       stored &&

@@ -6,9 +6,11 @@ import {
   HEARTBEAT_TIMEOUT_SECONDS,
   PRESENCE_CHECKPOINT_INTERVAL_SECONDS,
   RECONNECT_WINDOW_SECONDS,
+  TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS,
   buildHeartbeatConfig,
   shouldCheckpointPresence,
   shouldHydrateActiveSessions,
+  shouldPruneSessionCheckpoint,
   shouldResumeSession,
   toHydratedPresenceState,
   toPresenceSnapshot,
@@ -21,6 +23,7 @@ test("buildHeartbeatConfig exposes the room heartbeat defaults", () => {
     reconnect_window_seconds: RECONNECT_WINDOW_SECONDS,
     presence_checkpoint_interval_seconds: PRESENCE_CHECKPOINT_INTERVAL_SECONDS,
   });
+  assert.equal(TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS, 5);
 });
 
 test("shouldResumeSession accepts reconnects inside the resume window", () => {
@@ -131,5 +134,41 @@ test("toHydratedPresenceState refreshes the last seen timestamp while keeping id
       presence: "online",
       checkpointed_at: "2026-03-09T00:00:00.000Z",
     },
+  );
+});
+
+test("shouldPruneSessionCheckpoint removes stale reconnect state outside the resume window", () => {
+  assert.equal(
+    shouldPruneSessionCheckpoint({
+      session: {
+        session_id: "SESSION1",
+        agent_id: "AGENT42",
+        name: "peer-one",
+        joined_at: "2026-03-09T00:00:00.000Z",
+        last_seen_at: "2026-03-09T00:00:00.000Z",
+        presence: "offline",
+      },
+      now: "2026-03-09T00:03:01.000Z",
+      reconnectWindowSeconds: 120,
+    }),
+    true,
+  );
+});
+
+test("shouldPruneSessionCheckpoint keeps reconnect state inside the resume window", () => {
+  assert.equal(
+    shouldPruneSessionCheckpoint({
+      session: {
+        session_id: "SESSION1",
+        agent_id: "AGENT42",
+        name: "peer-one",
+        joined_at: "2026-03-09T00:00:00.000Z",
+        last_seen_at: "2026-03-09T00:01:30.000Z",
+        presence: "offline",
+      },
+      now: "2026-03-09T00:02:00.000Z",
+      reconnectWindowSeconds: 120,
+    }),
+    false,
   );
 });
