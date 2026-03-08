@@ -6,6 +6,18 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-03-08
+
+### Added
+
+- Added room-local `message_id` and `sequence` metadata for room messages and events
+- Added correlated ACK payloads for direct sends and broadcasts
+
+### Fixed
+
+- Prevented WebSocket read races in the Python MCP client when waiting for ACKs
+- Preserved stable room ordering state during join, inbox handling, and reconnect flows
+
 ## [2.0.1] - 2026-03-07
 
 ### Changed

@@ -33,6 +33,39 @@ current_room: Optional[dict] = None
 ws_conn: Optional[Any]       = None
 inbox: list                  = []
 http_session: Optional[aiohttp.ClientSession] = None
+pending_acks: dict[str, asyncio.Future] = {}
+
+def _update_room_sequence(msg: dict):
+    if current_room is None:
+        return
+    sequence = msg.get("sequence")
+    if isinstance(sequence, int):
+        last_sequence = current_room.get("last_sequence", 0)
+        if sequence > last_sequence:
+            current_room["last_sequence"] = sequence
+
+def _fail_pending_acks(reason: str):
+    error = RuntimeError(reason)
+    for request_id, future in list(pending_acks.items()):
+        if not future.done():
+            future.set_exception(error)
+        pending_acks.pop(request_id, None)
+
+async def _await_ack(payload: dict, timeout: float = 5.0) -> tuple[str, Optional[dict]]:
+    request_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_acks[request_id] = future
+    try:
+        await ws_conn.send(json.dumps({**payload, "request_id": request_id}))
+        ack = await asyncio.wait_for(future, timeout=timeout)
+        return request_id, ack
+    except asyncio.TimeoutError:
+        pending_acks.pop(request_id, None)
+        return request_id, None
+    finally:
+        if request_id in pending_acks and pending_acks[request_id].done():
+            pending_acks.pop(request_id, None)
 
 async def ws_listen():
     global ws_conn, agent_id
@@ -47,9 +80,11 @@ async def ws_listen():
                 except Exception as e:
                     logger.warning(f"Parse error: {e}")
         except ConnectionClosed:
+            _fail_pending_acks("WebSocket connection closed.")
             ws_conn = None
         except Exception as e:
             logger.warning(f"WS error: {e}")
+            _fail_pending_acks(f"WebSocket error: {e}")
             ws_conn = None
         await asyncio.sleep(2)
 
@@ -58,19 +93,33 @@ def _handle_incoming(msg: dict):
     t = msg.get("type")
     if t == "welcome":
         agent_id = msg.get("agent_id", agent_id)
+        if current_room is not None:
+            current_room["last_sequence"] = msg.get("last_sequence", current_room.get("last_sequence", 0))
         for peer in msg.get("agents", []):
             inbox.append({"type": "event", "event": "agent_online",
                 "from": peer.get("name"), "agent_id": peer.get("agent_id"),
                 "timestamp": datetime.now(timezone.utc).isoformat()})
     elif t == "message":
+        _update_room_sequence(msg)
         inbox.append({"type": "message", "from": msg.get("from_name", "unknown"),
             "agent_id": msg.get("from"), "content": msg.get("content", ""),
             "msg_type": msg.get("msg_type", "text"), "broadcast": msg.get("broadcast", False),
+            "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
+            "room_id": msg.get("room_id"),
             "timestamp": msg.get("timestamp", datetime.now(timezone.utc).isoformat())})
     elif t == "event":
+        _update_room_sequence(msg)
         inbox.append({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
+            "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
+            "room_id": msg.get("room_id"),
             "timestamp": msg.get("timestamp", datetime.now(timezone.utc).isoformat())})
+    elif t == "ack":
+        request_id = msg.get("request_id")
+        if isinstance(request_id, str):
+            future = pending_acks.pop(request_id, None)
+            if future is not None and not future.done():
+                future.set_result(msg)
 
 async def ping_loop():
     while True:
@@ -188,17 +237,18 @@ async def room_join(params: JoinRoomInput) -> str:
         try: await ws_conn.close()
         except Exception: pass
         ws_conn = None
+        _fail_pending_acks("WebSocket connection replaced by room_join.")
 
     try:
-        conn    = await asyncio.wait_for(websockets.connect(f"{WS_BASE}/connect/{rid}?{qs}"), timeout=15)
-        ws_conn = conn
+        conn = await asyncio.wait_for(websockets.connect(f"{WS_BASE}/connect/{rid}?{qs}"), timeout=15)
         welcome = json.loads(await asyncio.wait_for(conn.recv(), timeout=10))
 
         if welcome.get("type") != "welcome":
             return json.dumps({"success": False, "error": f"Unexpected response: {welcome}"})
 
         agent_id     = welcome.get("agent_id", agent_id)
-        current_room = {"room_id": rid}
+        current_room = {"room_id": rid, "last_sequence": welcome.get("last_sequence", 0)}
+        ws_conn = conn
         existing     = welcome.get("agents", [])
 
         return json.dumps({"success": True, "room_id": rid, "my_agent_id": agent_id,
@@ -225,6 +275,7 @@ async def room_leave() -> str:
     try:
         if ws_conn: await ws_conn.close()
     except Exception: pass
+    _fail_pending_acks("WebSocket connection closed by room_leave.")
     ws_conn = None; current_room = None; agent_id = None
     return json.dumps({"success": True, "message": "Berhasil keluar dari room."})
 
@@ -272,17 +323,19 @@ async def agent_send(params: SendInput) -> str:
     if ws_conn is None:
         return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
     try:
-        await ws_conn.send(json.dumps({"type": "send", "to": params.peer_id,
-            "content": params.message, "msg_type": params.msg_type}))
-        try:
-            ack = json.loads(await asyncio.wait_for(ws_conn.recv(), timeout=5))
-            if ack.get("type") != "ack":
-                _handle_incoming(ack)
-                return json.dumps({"success": True, "note": "Terkirim (ACK tidak tertangkap)"})
-            return json.dumps({"success": ack.get("delivered", False),
-                "delivered": ack.get("delivered", False), "to": params.peer_id})
-        except asyncio.TimeoutError:
-            return json.dumps({"success": True, "note": "Terkirim (ACK timeout)"})
+        request_id, ack = await _await_ack({"type": "send", "to": params.peer_id,
+            "content": params.message, "msg_type": params.msg_type})
+        if ack is None:
+            return json.dumps({"success": True, "request_id": request_id,
+                "note": "Terkirim (ACK timeout)"})
+        return json.dumps({"success": ack.get("delivered", False),
+            "accepted": ack.get("accepted", False),
+            "delivered": ack.get("delivered", False),
+            "recipient_count": ack.get("recipient_count", 0),
+            "to": params.peer_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence")})
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -300,9 +353,19 @@ async def agent_broadcast(params: BroadcastInput) -> str:
     if ws_conn is None:
         return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
     try:
-        await ws_conn.send(json.dumps({"type": "broadcast",
-            "content": params.message, "msg_type": params.msg_type}))
-        return json.dumps({"success": True, "message": "Broadcast terkirim ke semua agent di room."})
+        request_id, ack = await _await_ack({"type": "broadcast",
+            "content": params.message, "msg_type": params.msg_type})
+        if ack is None:
+            return json.dumps({"success": True, "request_id": request_id,
+                "message": "Broadcast diterima relay (ACK timeout)."})
+        return json.dumps({"success": ack.get("accepted", False),
+            "accepted": ack.get("accepted", False),
+            "delivered": ack.get("delivered", False),
+            "recipient_count": ack.get("recipient_count", 0),
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "message": "Broadcast diterima relay."})
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 

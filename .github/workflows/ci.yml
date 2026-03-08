@@ -47,8 +47,8 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Run Worker metadata tests
-        run: npx -y tsx --test src/room-meta.test.ts
+      - name: Run Worker unit tests
+        run: npx -y tsx --test src/room-meta.test.ts src/message-protocol.test.ts
 
       - name: Validate Worker bundle
         run: npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
