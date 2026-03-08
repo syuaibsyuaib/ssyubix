@@ -19,6 +19,10 @@ export interface RoomEventPayload extends SequencedRoomPayload {
   event: string;
   agent_id: string;
   name: string;
+  presence?: "online" | "offline";
+  joined_at?: string;
+  last_seen_at?: string;
+  session_resumed?: boolean;
 }
 
 export interface AckPayload {
@@ -71,6 +75,10 @@ export function createRoomEvent(params: {
   event: string;
   agentId: string;
   name: string;
+  presence?: "online" | "offline";
+  joinedAt?: string;
+  lastSeenAt?: string;
+  sessionResumed?: boolean;
 }): RoomEventPayload {
   return {
     type: "event",
@@ -81,6 +89,10 @@ export function createRoomEvent(params: {
     event: params.event,
     agent_id: params.agentId,
     name: params.name,
+    presence: params.presence,
+    joined_at: params.joinedAt,
+    last_seen_at: params.lastSeenAt,
+    session_resumed: params.sessionResumed,
   };
 }
 

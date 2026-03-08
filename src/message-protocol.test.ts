@@ -48,6 +48,10 @@ test("createRoomEvent includes message identity and ordering fields", () => {
       event: "agent_joined",
       agentId: "AGENT2",
       name: "agent-two",
+      presence: "online",
+      joinedAt: "2026-03-08T00:00:55.000Z",
+      lastSeenAt: "2026-03-08T00:01:00.000Z",
+      sessionResumed: false,
     }),
     {
       type: "event",
@@ -58,6 +62,10 @@ test("createRoomEvent includes message identity and ordering fields", () => {
       event: "agent_joined",
       agent_id: "AGENT2",
       name: "agent-two",
+      presence: "online",
+      joined_at: "2026-03-08T00:00:55.000Z",
+      last_seen_at: "2026-03-08T00:01:00.000Z",
+      session_resumed: false,
     },
   );
 });
