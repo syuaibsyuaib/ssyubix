@@ -58,6 +58,17 @@ Optional environment variables:
 - `agent_read_inbox`
 - `agent_list`
 
+## Available MCP Resources
+
+- `ssyubix://rooms/{room_id}/agents`
+- `ssyubix://rooms/{room_id}/agents/{agent_id}`
+- `ssyubix://rooms/{room_id}/skills`
+- `ssyubix://rooms/{room_id}/skills/{skill_id}`
+
+These resources expose the room-scoped capability registry backed by the
+Cloudflare relay, so agent capability data can be discovered consistently
+across devices without moving transient local cache state into durable storage.
+
 ## Development
 
 Python package work happens in `python/`.
