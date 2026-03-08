@@ -5,6 +5,7 @@ export const PRESENCE_CHECKPOINT_INTERVAL_SECONDS = Math.max(
   HEARTBEAT_INTERVAL_SECONDS * 2,
   60,
 );
+export const TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS = 5;
 
 export interface AgentPresenceSnapshot {
   agent_id: string;
@@ -100,6 +101,18 @@ export function toHydratedPresenceState<T extends {
     last_seen_at: now,
     presence: "online",
   };
+}
+
+export function shouldPruneSessionCheckpoint(params: {
+  session: StoredRoomSession;
+  now: string;
+  reconnectWindowSeconds?: number;
+}): boolean {
+  return !shouldResumeSession({
+    lastSeenAt: params.session.last_seen_at,
+    now: params.now,
+    reconnectWindowSeconds: params.reconnectWindowSeconds,
+  });
 }
 
 export function shouldResumeSession(params: {
