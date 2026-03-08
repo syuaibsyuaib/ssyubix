@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-03-09
+
 ### Added
 
 - Added room-scoped capability registry storage in the Cloudflare relay with MCP resources for agents and skills
