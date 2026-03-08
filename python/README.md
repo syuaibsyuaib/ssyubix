@@ -34,6 +34,7 @@ uvx ssyubix
 - `SSYUBIX_LOCAL_RETRY_LIMIT`: optional max queued outbound retry entries per room (default `50`)
 - `SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS`: optional max replay attempts for one queued action (default `5`)
 - `SSYUBIX_LOCAL_RETRY_TTL_SECONDS`: optional local retry retention in seconds (default `21600`)
+- `SSYUBIX_LOCAL_SUMMARY_STALE_SECONDS`: optional staleness threshold for local room snapshots (default `900`)
 
 Default Worker endpoint:
 
@@ -49,6 +50,7 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `room_leave`
 - `room_list`
 - `room_info`
+- `room_local_summary`
 - `agent_send`
 - `agent_broadcast`
 - `agent_read_inbox`
@@ -61,6 +63,9 @@ https://agentlink.syuaibsyuaib.workers.dev
 
 `agent_send` and `agent_broadcast` also keep a local retry queue for transient disconnects
 or zero-recipient deliveries, then replay those actions after reconnect when possible.
+
+`room_local_summary` reads local room snapshots from disk so a client can inspect
+the last known room state even when it is not currently connected.
 
 ## Development
 

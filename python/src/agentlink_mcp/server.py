@@ -34,6 +34,7 @@ LOCAL_INBOX_LIMIT = max(10, int(os.environ.get("SSYUBIX_LOCAL_INBOX_LIMIT", "200
 LOCAL_RETRY_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_LIMIT", "50")))
 LOCAL_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS", "5")))
 LOCAL_RETRY_TTL_SECONDS = max(60, int(os.environ.get("SSYUBIX_LOCAL_RETRY_TTL_SECONDS", "21600")))
+LOCAL_SUMMARY_STALE_SECONDS = max(60, int(os.environ.get("SSYUBIX_LOCAL_SUMMARY_STALE_SECONDS", "900")))
 
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
@@ -78,6 +79,10 @@ def _room_cache_path(room_id: str) -> Path:
     return local_state_dir / "rooms" / _server_cache_key() / f"{room_id.upper()}.json"
 
 
+def _room_cache_dir() -> Path:
+    return local_state_dir / "rooms" / _server_cache_key()
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -111,6 +116,131 @@ def _iso_to_timestamp(value: Optional[str]) -> float:
         return datetime.fromisoformat(value).timestamp()
     except ValueError:
         return 0.0
+
+
+def _clip_text(value: Any, limit: int = 120) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    collapsed = " ".join(value.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[: limit - 1]}…"
+
+
+def _sanitize_peer_snapshot(peer: Any) -> Optional[dict]:
+    if not isinstance(peer, dict):
+        return None
+    agent_id_value = peer.get("agent_id")
+    if not isinstance(agent_id_value, str) or not agent_id_value:
+        return None
+    return {
+        "agent_id": agent_id_value,
+        "name": peer.get("name") if isinstance(peer.get("name"), str) else None,
+        "presence": peer.get("presence") if isinstance(peer.get("presence"), str) else None,
+        "joined_at": peer.get("joined_at") if isinstance(peer.get("joined_at"), str) else None,
+        "last_seen_at": peer.get("last_seen_at") if isinstance(peer.get("last_seen_at"), str) else None,
+    }
+
+
+def _build_local_room_summary(*, room_id: str, room_state: Optional[dict], messages: list[dict],
+    retry_queue: list[dict], cached_at: Optional[str] = None) -> dict:
+    cached_at_value = cached_at if isinstance(cached_at, str) else _now_iso()
+    last_read_sequence = _safe_int(room_state.get("last_read_sequence")) if isinstance(room_state, dict) else 0
+    last_sequence = _safe_int(room_state.get("last_sequence")) if isinstance(room_state, dict) else _max_message_sequence(messages)
+    existing_summary = room_state.get("local_summary", {}) if isinstance(room_state, dict) else {}
+    existing_room = existing_summary.get("room", {}) if isinstance(existing_summary, dict) else {}
+    peers_raw = room_state.get("peers", {}) if isinstance(room_state, dict) else {}
+    if isinstance(peers_raw, dict):
+        peers = [
+            sanitized
+            for sanitized in (_sanitize_peer_snapshot(peer) for peer in peers_raw.values())
+            if sanitized is not None
+        ]
+    else:
+        peers = []
+    if not peers and isinstance(existing_summary, dict):
+        peers = [
+            sanitized
+            for sanitized in (_sanitize_peer_snapshot(peer) for peer in existing_summary.get("peers", []))
+            if sanitized is not None
+        ]
+
+    message_entries = [
+        message for message in messages
+        if isinstance(message, dict) and message.get("type") == "message"
+    ]
+    event_entries = [
+        message for message in messages
+        if isinstance(message, dict) and message.get("type") == "event"
+    ]
+    unread_count = len([
+        message for message in message_entries
+        if isinstance(message.get("sequence"), int) and message.get("sequence", 0) > last_read_sequence
+    ])
+    last_message = max(message_entries, key=lambda item: _iso_to_timestamp(item.get("timestamp")), default=None)
+    last_event = max(event_entries, key=lambda item: _iso_to_timestamp(item.get("timestamp")), default=None)
+    last_activity_timestamp = max([
+        _iso_to_timestamp(last_message.get("timestamp")) if isinstance(last_message, dict) else 0.0,
+        _iso_to_timestamp(last_event.get("timestamp")) if isinstance(last_event, dict) else 0.0,
+        _iso_to_timestamp(cached_at_value),
+    ])
+    age_seconds = max(0, int(time.time() - _iso_to_timestamp(cached_at_value)))
+
+    return {
+        "room_id": room_id.upper(),
+        "generated_at": _now_iso(),
+        "cached_at": cached_at_value,
+        "age_seconds": age_seconds,
+        "is_stale": age_seconds > LOCAL_SUMMARY_STALE_SECONDS,
+        "last_sequence": last_sequence,
+        "last_read_sequence": last_read_sequence,
+        "unread_count": unread_count,
+        "cached_message_count": len(messages),
+        "retry_queue_count": len(retry_queue),
+        "peer_count": len(peers),
+        "peers": peers[:10],
+        "room": {
+            "joined_at": room_state.get("joined_at") if isinstance(room_state, dict) and isinstance(room_state.get("joined_at"), str)
+            else existing_room.get("joined_at"),
+            "last_seen_at": room_state.get("last_seen_at") if isinstance(room_state, dict) and isinstance(room_state.get("last_seen_at"), str)
+            else existing_room.get("last_seen_at"),
+            "presence": room_state.get("presence") if isinstance(room_state, dict) and isinstance(room_state.get("presence"), str)
+            else existing_room.get("presence"),
+            "session_resumed": bool(room_state.get("session_resumed")) if isinstance(room_state, dict) else False,
+            "heartbeat_interval_seconds": _safe_int(room_state.get("heartbeat_interval_seconds"))
+            if isinstance(room_state, dict) and room_state.get("heartbeat_interval_seconds") is not None
+            else _safe_int(existing_room.get("heartbeat_interval_seconds")),
+            "heartbeat_timeout_seconds": _safe_int(room_state.get("heartbeat_timeout_seconds"))
+            if isinstance(room_state, dict) and room_state.get("heartbeat_timeout_seconds") is not None
+            else _safe_int(existing_room.get("heartbeat_timeout_seconds")),
+        },
+        "recent_activity": {
+            "message_count": len(message_entries),
+            "event_count": len(event_entries),
+            "last_activity_at": datetime.fromtimestamp(last_activity_timestamp, tz=timezone.utc).isoformat()
+            if last_activity_timestamp > 0 else None,
+            "last_message_at": last_message.get("timestamp") if isinstance(last_message, dict) else None,
+            "last_message_from": last_message.get("from") if isinstance(last_message, dict) else None,
+            "last_message_preview": _clip_text(last_message.get("content")) if isinstance(last_message, dict) else None,
+            "last_event_at": last_event.get("timestamp") if isinstance(last_event, dict) else None,
+            "last_event": last_event.get("event") if isinstance(last_event, dict) else None,
+        },
+    }
+
+
+def _refresh_local_summary_metadata(summary: dict, cached_at: Optional[str]) -> dict:
+    if not isinstance(summary, dict):
+        return summary
+    cached_at_value = cached_at if isinstance(cached_at, str) else summary.get("cached_at")
+    age_seconds = max(0, int(time.time() - _iso_to_timestamp(cached_at_value)))
+    refreshed = dict(summary)
+    refreshed["generated_at"] = _now_iso()
+    refreshed["cached_at"] = cached_at_value
+    refreshed["age_seconds"] = age_seconds
+    refreshed["is_stale"] = age_seconds > LOCAL_SUMMARY_STALE_SECONDS
+    return refreshed
 
 
 def _normalize_retry_entry(entry: dict) -> Optional[dict]:
@@ -169,21 +299,37 @@ def _write_json_file(path: Path, payload: dict):
 def _load_local_room_state(room_id: str) -> dict:
     cache_path = _room_cache_path(room_id)
     if not cache_path.exists():
+        summary = _build_local_room_summary(
+            room_id=room_id.upper(),
+            room_state={},
+            messages=[],
+            retry_queue=[],
+        )
         return {
             "room_id": room_id.upper(),
             "messages": [],
+            "retry_queue": [],
             "last_read_sequence": 0,
             "last_sequence": 0,
+            "summary": summary,
             "restored": False,
         }
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
+        summary = _build_local_room_summary(
+            room_id=room_id.upper(),
+            room_state={},
+            messages=[],
+            retry_queue=[],
+        )
         return {
             "room_id": room_id.upper(),
             "messages": [],
+            "retry_queue": [],
             "last_read_sequence": 0,
             "last_sequence": 0,
+            "summary": summary,
             "restored": False,
         }
 
@@ -191,13 +337,29 @@ def _load_local_room_state(room_id: str) -> dict:
     if not isinstance(messages, list):
         messages = []
     messages = [message for message in messages if isinstance(message, dict)][-LOCAL_INBOX_LIMIT:]
+    retry_queue = _normalized_retry_queue(payload.get("retry_queue"))
+    room_state_for_summary = payload.get("summary", {}).get("room")
+    if not isinstance(room_state_for_summary, dict):
+        room_state_for_summary = {}
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        summary = _build_local_room_summary(
+            room_id=payload.get("room_id", room_id.upper()),
+            room_state=room_state_for_summary,
+            messages=messages,
+            retry_queue=retry_queue,
+            cached_at=payload.get("cached_at"),
+        )
+    else:
+        summary = _refresh_local_summary_metadata(summary, payload.get("cached_at"))
     return {
         "room_id": payload.get("room_id", room_id.upper()),
         "messages": messages,
-        "retry_queue": _normalized_retry_queue(payload.get("retry_queue")),
+        "retry_queue": retry_queue,
         "last_read_sequence": _safe_int(payload.get("last_read_sequence")),
         "last_sequence": _safe_int(payload.get("last_sequence")),
         "cached_at": payload.get("cached_at"),
+        "summary": summary,
         "restored": True,
     }
 
@@ -213,15 +375,24 @@ def _persist_local_room_state():
         for message in inbox[-LOCAL_INBOX_LIMIT:]
         if isinstance(message, dict) and message.get("room_id", room_id) == room_id
     ]
+    retry_queue = _normalized_retry_queue(current_room.get("retry_queue"))
+    summary = _build_local_room_summary(
+        room_id=room_id,
+        room_state=current_room,
+        messages=messages,
+        retry_queue=retry_queue,
+    )
+    current_room["local_summary"] = summary
     payload = {
         "version": LOCAL_STATE_VERSION,
         "server": AGENTLINK_URL,
         "room_id": room_id,
-        "cached_at": _now_iso(),
+        "cached_at": summary["cached_at"],
         "last_sequence": _safe_int(current_room.get("last_sequence")),
         "last_read_sequence": _safe_int(current_room.get("last_read_sequence")),
         "messages": messages,
-        "retry_queue": _normalized_retry_queue(current_room.get("retry_queue")),
+        "retry_queue": retry_queue,
+        "summary": summary,
     }
     try:
         _write_json_file(_room_cache_path(room_id), payload)
@@ -261,6 +432,7 @@ def _restore_local_room_state(room_id: str):
     current_room["local_cache_restored"] = cached["restored"]
     current_room["local_cache_restored_at"] = cached.get("cached_at")
     current_room["local_retry_queue_count"] = len(cached["retry_queue"])
+    current_room["local_summary"] = cached["summary"]
     _persist_local_room_state()
 
 
@@ -274,6 +446,36 @@ def _append_inbox_entry(entry: dict):
     if len(inbox) > LOCAL_INBOX_LIMIT:
         del inbox[:-LOCAL_INBOX_LIMIT]
     _persist_local_room_state()
+
+
+def _read_local_room_summary(room_id: str) -> dict:
+    cached = _load_local_room_state(room_id)
+    summary = cached.get("summary")
+    if not isinstance(summary, dict):
+        summary = _build_local_room_summary(
+            room_id=room_id.upper(),
+            room_state={},
+            messages=cached.get("messages", []),
+            retry_queue=cached.get("retry_queue", []),
+            cached_at=cached.get("cached_at"),
+        )
+    return {
+        "room_id": room_id.upper(),
+        "cache_path": str(_room_cache_path(room_id)),
+        "restored": cached.get("restored", False),
+        "summary": summary,
+    }
+
+
+def _list_local_room_summaries() -> list[dict]:
+    cache_dir = _room_cache_dir()
+    if not cache_dir.exists():
+        return []
+    summaries = []
+    for cache_path in sorted(cache_dir.glob("*.json")):
+        room_id = cache_path.stem.upper()
+        summaries.append(_read_local_room_summary(room_id))
+    return summaries
 
 
 def _retry_backoff_seconds(attempts: int) -> int:
@@ -783,6 +985,11 @@ class ReadInboxInput(BaseModel):
     clear: bool = Field(default=False, description="Hapus setelah dibaca")
 
 
+class LocalRoomSummaryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    room_id: Optional[str] = Field(default=None, description="ID room untuk membaca snapshot lokal tertentu")
+
+
 @mcp.tool(name="agent_register")
 async def agent_register(params: RegisterInput) -> str:
     """
@@ -860,6 +1067,7 @@ async def room_join(params: JoinRoomInput) -> str:
             "last_read_sequence": current_room.get("last_read_sequence") if current_room else 0,
             "local_cached_message_count": current_room.get("local_cached_message_count") if current_room else 0,
             "local_retry_queue_count": current_room.get("local_retry_queue_count") if current_room else 0,
+            "local_room_summary": current_room.get("local_summary") if current_room else None,
             "message": welcome.get("message", f"Berhasil join room '{rid}'.")}, indent=2)
 
     except asyncio.TimeoutError:
@@ -921,8 +1129,33 @@ async def room_info() -> str:
     if not current_room:
         return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
     current_room["local_retry_queue_count"] = len(_retry_queue())
+    _persist_local_room_state()
     return json.dumps({"success": True, "room": current_room,
         "my_agent_id": agent_id, "connected": ws_conn is not None}, indent=2)
+
+
+@mcp.tool(name="room_local_summary")
+async def room_local_summary(params: LocalRoomSummaryInput) -> str:
+    """
+    Baca snapshot ringkasan room dari cache lokal device ini.
+
+    Jika `room_id` kosong dan sedang join room, pakai room saat ini.
+    Jika `room_id` kosong dan sedang offline, kembalikan semua snapshot lokal yang tersedia.
+
+    Args:
+        params: room_id (opsional)
+    Returns:
+        str: JSON ringkasan snapshot lokal
+    """
+    room_id = params.room_id.upper() if params.room_id else None
+    if room_id:
+        snapshot = _read_local_room_summary(room_id)
+        return json.dumps({"success": True, "room_id": room_id, **snapshot}, indent=2)
+    if current_room is not None and isinstance(current_room.get("room_id"), str):
+        snapshot = _read_local_room_summary(current_room["room_id"])
+        return json.dumps({"success": True, "room_id": current_room["room_id"], **snapshot}, indent=2)
+    snapshots = _list_local_room_summaries()
+    return json.dumps({"success": True, "rooms": snapshots, "count": len(snapshots)}, indent=2)
 
 
 @mcp.tool(name="agent_send")
