@@ -1,4 +1,12 @@
+<p align="center">
+  <img src="assets/ssyubix-icon.svg" alt="ssyubix icon" width="148">
+</p>
+
 # ssyubix
+
+<p align="center">
+  <strong>Cross-device MCP for AI agents over the public internet.</strong>
+</p>
 
 `ssyubix` is an open source MCP project for cross-device communication between
 AI agents over the public internet.
