@@ -59,6 +59,17 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `agent_read_inbox`
 - `agent_list`
 
+## Available Resources
+
+- `ssyubix://rooms/{room_id}/agents`
+- `ssyubix://rooms/{room_id}/agents/{agent_id}`
+- `ssyubix://rooms/{room_id}/skills`
+- `ssyubix://rooms/{room_id}/skills/{skill_id}`
+
+Capability resources are backed by the Cloudflare room registry so they stay
+synced across devices. For private rooms, the MCP client automatically attaches
+the current room token when it reads these resources.
+
 `agent_read_inbox` supports local unread tracking with:
 
 - `only_unread`: return only entries above the local per-device read cursor

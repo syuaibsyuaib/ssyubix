@@ -680,5 +680,84 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(room_c.exists())
 
 
+class _FakeCapabilityResponse:
+    def __init__(self, *, status: int, payload):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+    async def text(self):
+        return str(self._payload)
+
+
+class _FakeCapabilitySession:
+    def __init__(self, response: _FakeCapabilityResponse):
+        self.response = response
+        self.calls = []
+
+    def get(self, url, params=None):
+        self.calls.append({"url": url, "params": params or {}})
+        return self.response
+
+
+class CapabilityResourceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.original_http_session = server.http_session
+        self.original_room_credentials = server.room_credentials
+        server.room_credentials = {"room_id": "ROOM42", "token": "SECRET123"}
+
+    def tearDown(self):
+        server.http_session = self.original_http_session
+        server.room_credentials = self.original_room_credentials
+
+    def test_capability_resource_auth_params_only_exposes_current_room_token(self):
+        self.assertEqual(
+            server._capability_resource_auth_params("room42"),
+            {"token": "SECRET123"},
+        )
+        self.assertEqual(
+            server._capability_resource_auth_params("ROOM99"),
+            {},
+        )
+
+    async def test_fetch_capability_resource_uses_room_token_when_available(self):
+        fake_session = _FakeCapabilitySession(
+            _FakeCapabilityResponse(
+                status=200,
+                payload={"success": True, "room_id": "ROOM42", "count": 1, "agents": []},
+            )
+        )
+        server.http_session = fake_session
+
+        payload = await server._fetch_capability_resource("room42", "agents")
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(fake_session.calls[0]["url"], f"{server.AGENTLINK_URL}/capabilities/ROOM42/agents")
+        self.assertEqual(fake_session.calls[0]["params"], {"token": "SECRET123"})
+
+    async def test_fetch_capability_resource_raises_for_private_room_without_token(self):
+        server.room_credentials = None
+        fake_session = _FakeCapabilitySession(
+            _FakeCapabilityResponse(
+                status=403,
+                payload={"success": False, "error": "Token salah."},
+            )
+        )
+        server.http_session = fake_session
+
+        with self.assertRaisesRegex(RuntimeError, "Token salah"):
+            await server._fetch_capability_resource("ROOM42", "agents")
+
+
 if __name__ == "__main__":
     unittest.main()

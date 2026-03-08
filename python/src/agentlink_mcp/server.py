@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Any
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import aiohttp
 import websockets
@@ -769,6 +769,56 @@ def _cancel_retry_replay_task():
     retry_replay_task = None
 
 
+def _capability_resource_auth_params(room_id: str) -> dict[str, str]:
+    normalized_room_id = room_id.upper()
+    if (
+        room_credentials is None
+        or room_credentials.get("room_id") != normalized_room_id
+    ):
+        return {}
+    token = room_credentials.get("token")
+    if isinstance(token, str) and token:
+        return {"token": token}
+    return {}
+
+
+async def _fetch_capability_resource(room_id: str, resource_path: str) -> dict[str, Any]:
+    if http_session is None:
+        raise RuntimeError("HTTP session belum siap.")
+
+    normalized_room_id = room_id.upper()
+    url = f"{AGENTLINK_URL}/capabilities/{normalized_room_id}/{resource_path}"
+    status_code = 0
+    async with http_session.get(
+        url,
+        params=_capability_resource_auth_params(normalized_room_id),
+    ) as response:
+        status_code = response.status
+        try:
+            payload = await response.json()
+        except Exception:
+            payload = {
+                "success": False,
+                "error": await response.text(),
+            }
+
+    if status_code >= 400:
+        message = payload.get("error") if isinstance(payload, dict) else None
+        raise RuntimeError(
+            message
+            or f"Gagal membaca capability resource '{resource_path}' untuk room '{normalized_room_id}'."
+        )
+
+    if isinstance(payload, dict):
+        return payload
+
+    return {
+        "success": True,
+        "room_id": normalized_room_id,
+        "data": payload,
+    }
+
+
 def _schedule_retry_replay(delay: float = 0.0):
     global retry_replay_task
     if current_room is None or ws_conn is None:
@@ -1125,6 +1175,50 @@ class ReadInboxInput(BaseModel):
 class LocalRoomSummaryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     room_id: Optional[str] = Field(default=None, description="ID room untuk membaca snapshot lokal tertentu")
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/agents",
+    name="ssyubix-room-capability-agents",
+    description="Capability registry per room untuk semua agent yang diketahui relay.",
+    mime_type="application/json",
+)
+async def capability_agents_resource(room_id: str) -> str:
+    payload = await _fetch_capability_resource(room_id, "agents")
+    return json.dumps(payload, indent=2)
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/agents/{agent_id}",
+    name="ssyubix-room-capability-agent",
+    description="Capability profile untuk satu agent pada room tertentu.",
+    mime_type="application/json",
+)
+async def capability_agent_resource(room_id: str, agent_id: str) -> str:
+    payload = await _fetch_capability_resource(room_id, f"agents/{quote(agent_id, safe='')}")
+    return json.dumps(payload, indent=2)
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/skills",
+    name="ssyubix-room-capability-skills",
+    description="Indeks skill ke agent-agent yang mendeklarasikannya pada room tertentu.",
+    mime_type="application/json",
+)
+async def capability_skills_resource(room_id: str) -> str:
+    payload = await _fetch_capability_resource(room_id, "skills")
+    return json.dumps(payload, indent=2)
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/skills/{skill_id}",
+    name="ssyubix-room-capability-skill",
+    description="Detail skill tertentu beserta agent yang mendeklarasikannya.",
+    mime_type="application/json",
+)
+async def capability_skill_resource(room_id: str, skill_id: str) -> str:
+    payload = await _fetch_capability_resource(room_id, f"skills/{quote(skill_id, safe='')}")
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool(name="agent_register")

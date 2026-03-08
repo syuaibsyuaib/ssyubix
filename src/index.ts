@@ -11,6 +11,15 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+import {
+  buildCapabilitySkillIndex,
+  createCapabilityRegistryManifest,
+  listCapabilityProfiles,
+  ROOM_CAPABILITY_REGISTRY_KEY,
+  upsertCapabilityProfile,
+  type CapabilityPresenceOverlay,
+  type CapabilityRegistryManifest,
+} from "./capability-registry";
 import { createAck, createRoomEvent, createRoomMessage } from "./message-protocol";
 import {
   buildHeartbeatConfig,
@@ -92,6 +101,10 @@ export default {
           list_rooms: "GET /rooms",
           create_room: "POST /rooms",
           connect: "WS /connect/:room_id?name=<name>&token=<token>",
+          capability_agents: "GET /capabilities/:room_id/agents?token=<token>",
+          capability_agent: "GET /capabilities/:room_id/agents/:agent_id?token=<token>",
+          capability_skills: "GET /capabilities/:room_id/skills?token=<token>",
+          capability_skill: "GET /capabilities/:room_id/skills/:skill_id?token=<token>",
         },
       }, { headers: corsHeaders });
     }
@@ -138,6 +151,48 @@ export default {
           ? `Bagikan room_id '${room_id}' dan token ke peer.`
           : `Bagikan room_id '${room_id}' ke peer untuk join.`,
       }, { headers: corsHeaders });
+    }
+
+    const capabilityMatch = path.match(
+      /^\/capabilities\/([A-Z0-9]{6})\/(agents|skills)(?:\/([^/]+))?$/i,
+    );
+    if (capabilityMatch && request.method === "GET") {
+      const room_id = capabilityMatch[1].toUpperCase();
+      const collection = capabilityMatch[2].toLowerCase();
+      const entryId = capabilityMatch[3]
+        ? decodeURIComponent(capabilityMatch[3])
+        : undefined;
+      const token = url.searchParams.get("token") || "";
+
+      const registry = env.AGENTLINK_REGISTRY.get(
+        env.AGENTLINK_REGISTRY.idFromName("global"),
+      );
+      const checkResp = await registry.fetch(new Request(
+        `http://internal/check?room_id=${room_id}&token=${encodeURIComponent(token)}`,
+      ));
+      const check = await checkResp.json() as { ok: boolean; error?: string };
+
+      if (!check.ok) {
+        return Response.json(
+          { success: false, error: check.error || "Unauthorized" },
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const roomDO = env.AGENTLINK_ROOM.get(
+        env.AGENTLINK_ROOM.idFromName(room_id),
+      );
+      const internalPath = entryId
+        ? `http://internal/capabilities/${collection}/${encodeURIComponent(entryId)}?room_id=${room_id}`
+        : `http://internal/capabilities/${collection}?room_id=${room_id}`;
+      const roomResp = await roomDO.fetch(new Request(internalPath));
+      return new Response(await roomResp.text(), {
+        status: roomResp.status,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": roomResp.headers.get("Content-Type") ?? "application/json",
+        },
+      });
     }
 
     // ── WS /connect/:room_id ── join room via WebSocket
@@ -189,6 +244,13 @@ export class AgentLinkRoom extends DurableObject {
   private lastHydratedAt: string | null = null;
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname.startsWith("/capabilities/")) {
+      const now = new Date().toISOString();
+      await this.ensureActiveSessionsHydrated(now);
+      return this.handleCapabilityRequest(url);
+    }
+
     const upgradeHeader = request.headers.get("Upgrade");
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket", { status: 426 });
@@ -226,6 +288,7 @@ export class AgentLinkRoom extends DurableObject {
       force: true,
     });
     this.closeDuplicateSessions(server, sessionId);
+    await this.upsertCapabilityState(state);
 
     const joinSequence = await this.nextSequence();
     const heartbeat = buildHeartbeatConfig();
@@ -405,6 +468,7 @@ export class AgentLinkRoom extends DurableObject {
       nextState: offlineState,
       force: true,
     });
+    await this.upsertCapabilityState(offlineState);
     const sequence = await this.nextSequence();
 
     // Broadcast ke semua: ada yang leave
@@ -531,6 +595,38 @@ export class AgentLinkRoom extends DurableObject {
     await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
   }
 
+  private async loadCapabilityRegistryManifest(
+    now = new Date().toISOString(),
+  ): Promise<CapabilityRegistryManifest> {
+    const stored = await this.ctx.storage.get<CapabilityRegistryManifest>(
+      ROOM_CAPABILITY_REGISTRY_KEY,
+    );
+    return createCapabilityRegistryManifest(stored, now);
+  }
+
+  private listCapabilityPresenceOverlays(): CapabilityPresenceOverlay[] {
+    return this.listActiveAgents().map((snapshot) => ({
+      ...snapshot,
+      updated_at: snapshot.last_seen_at,
+    }));
+  }
+
+  private async upsertCapabilityState(state: AgentSessionState): Promise<void> {
+    const manifest = await this.loadCapabilityRegistryManifest(state.last_seen_at);
+    const { changed } = upsertCapabilityProfile(manifest, {
+      agentId: state.agent_id,
+      displayName: state.name,
+      presence: state.presence,
+      joinedAt: state.joined_at,
+      lastSeenAt: state.last_seen_at,
+      updatedAt: state.last_seen_at,
+    });
+    if (!changed) {
+      return;
+    }
+    await this.ctx.storage.put(ROOM_CAPABILITY_REGISTRY_KEY, manifest);
+  }
+
   private async maybeCheckpointSessionState(ws: WebSocket, params: {
     previousState: AgentSessionState;
     nextState: AgentSessionState;
@@ -634,6 +730,73 @@ export class AgentLinkRoom extends DurableObject {
 
     manifest.updated_at = now;
     await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
+  }
+
+  private async handleCapabilityRequest(url: URL): Promise<Response> {
+    const manifest = await this.loadCapabilityRegistryManifest();
+    const profiles = listCapabilityProfiles(
+      manifest,
+      this.listCapabilityPresenceOverlays(),
+    );
+    const segments = url.pathname.split("/").filter(Boolean);
+    const collection = segments[1];
+    const entryId = segments[2] ? decodeURIComponent(segments[2]) : undefined;
+    const roomId = url.searchParams.get("room_id") || "unknown";
+
+    if (collection === "agents" && !entryId) {
+      return Response.json({
+        success: true,
+        room_id: roomId,
+        updated_at: manifest.updated_at,
+        count: profiles.length,
+        agents: profiles,
+      });
+    }
+
+    if (collection === "agents" && entryId) {
+      const agent = profiles.find((profile) => profile.agent_id === entryId);
+      if (!agent) {
+        return Response.json(
+          { success: false, error: `Capability profile '${entryId}' tidak ditemukan.` },
+          { status: 404 },
+        );
+      }
+      return Response.json({
+        success: true,
+        room_id: roomId,
+        updated_at: manifest.updated_at,
+        agent,
+      });
+    }
+
+    const skills = buildCapabilitySkillIndex(profiles);
+    if (collection === "skills" && !entryId) {
+      return Response.json({
+        success: true,
+        room_id: roomId,
+        updated_at: manifest.updated_at,
+        count: skills.length,
+        skills,
+      });
+    }
+
+    if (collection === "skills" && entryId) {
+      const skill = skills.find((entry) => entry.skill_id === entryId);
+      if (!skill) {
+        return Response.json(
+          { success: false, error: `Skill '${entryId}' tidak ditemukan.` },
+          { status: 404 },
+        );
+      }
+      return Response.json({
+        success: true,
+        room_id: roomId,
+        updated_at: manifest.updated_at,
+        skill,
+      });
+    }
+
+    return new Response("Not Found", { status: 404 });
   }
 
   private findActiveSession(
