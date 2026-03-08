@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyCapabilityProfilePatch,
   buildCapabilitySkillIndex,
   createCapabilityRegistryManifest,
   listCapabilityProfiles,
+  removeCapabilityProfile,
   upsertCapabilityProfile,
+  validateCapabilityProfilePatch,
 } from "./capability-registry";
 
 test("upsertCapabilityProfile creates a default self-declared profile", () => {
@@ -224,4 +227,134 @@ test("buildCapabilitySkillIndex groups agents by declared skill", () => {
       ],
     },
   ]);
+});
+
+test("validateCapabilityProfilePatch accepts normalized self-service fields", () => {
+  assert.deepEqual(
+    validateCapabilityProfilePatch(
+      {
+        summary: "  Reviews code and deployment plans  ",
+        version: " 2026.03 ",
+        tool_access: ["github", " github ", "web"],
+        constraints: ["read_only", "no_secrets"],
+        max_concurrent_tasks: 3,
+        current_load: 1,
+        skills: [
+          {
+            id: "Code Review",
+            name: "Code Review",
+            description: "Review diffs",
+            tags: ["review", "review"],
+            input_modes: ["text"],
+            output_modes: ["text"],
+          },
+        ],
+      },
+      { allowAvailability: false },
+    ),
+    {
+      ok: true,
+      patch: {
+        summary: "Reviews code and deployment plans",
+        version: "2026.03",
+        tool_access: ["github", "web"],
+        constraints: ["read_only", "no_secrets"],
+        max_concurrent_tasks: 3,
+        current_load: 1,
+        skills: [
+          {
+            id: "code_review",
+            name: "Code Review",
+            description: "Review diffs",
+            tags: ["review"],
+            examples: [],
+            input_modes: ["text"],
+            output_modes: ["text"],
+          },
+        ],
+      },
+      errors: [],
+    },
+  );
+});
+
+test("validateCapabilityProfilePatch rejects unsupported and invalid values", () => {
+  const result = validateCapabilityProfilePatch(
+    {
+      availability: "offline",
+      current_load: 5,
+      max_concurrent_tasks: 2,
+      unknown_field: true,
+    },
+    { allowAvailability: true },
+  );
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors, [
+    "Field 'unknown_field' tidak didukung untuk capability update.",
+    "availability harus salah satu dari: available, busy, away, dnd.",
+    "current_load tidak boleh melebihi max_concurrent_tasks.",
+  ]);
+});
+
+test("applyCapabilityProfilePatch updates mutable capability fields without losing identity", () => {
+  const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
+  upsertCapabilityProfile(manifest, {
+    agentId: "AGENT42",
+    displayName: "alpha-agent",
+    presence: "online",
+    joinedAt: "2026-03-09T00:00:00.000Z",
+    lastSeenAt: "2026-03-09T00:00:05.000Z",
+    updatedAt: "2026-03-09T00:00:05.000Z",
+  });
+
+  const { changed, profile } = applyCapabilityProfilePatch(manifest, {
+    agentId: "AGENT42",
+    displayName: "alpha-agent",
+    presence: "online",
+    joinedAt: "2026-03-09T00:00:00.000Z",
+    lastSeenAt: "2026-03-09T00:01:00.000Z",
+    updatedAt: "2026-03-09T00:01:00.000Z",
+    patch: {
+      availability: "busy",
+      current_load: 2,
+      max_concurrent_tasks: 3,
+      summary: "Focused on code review",
+    },
+  });
+
+  assert.equal(changed, true);
+  assert.equal(profile.agent_id, "AGENT42");
+  assert.equal(profile.display_name, "alpha-agent");
+  assert.equal(profile.availability, "busy");
+  assert.equal(profile.current_load, 2);
+  assert.equal(profile.max_concurrent_tasks, 3);
+  assert.equal(profile.summary, "Focused on code review");
+});
+
+test("removeCapabilityProfile deletes only the targeted stored profile", () => {
+  const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
+  upsertCapabilityProfile(manifest, {
+    agentId: "AGENT42",
+    displayName: "alpha-agent",
+    presence: "online",
+    joinedAt: "2026-03-09T00:00:00.000Z",
+    lastSeenAt: "2026-03-09T00:00:05.000Z",
+    updatedAt: "2026-03-09T00:00:05.000Z",
+  });
+  upsertCapabilityProfile(manifest, {
+    agentId: "AGENT99",
+    displayName: "beta-agent",
+    presence: "online",
+    joinedAt: "2026-03-09T00:00:10.000Z",
+    lastSeenAt: "2026-03-09T00:00:15.000Z",
+    updatedAt: "2026-03-09T00:00:15.000Z",
+  });
+
+  assert.equal(
+    removeCapabilityProfile(manifest, "AGENT42", "2026-03-09T00:02:00.000Z"),
+    true,
+  );
+  assert.equal(manifest.profiles.AGENT42, undefined);
+  assert.notEqual(manifest.profiles.AGENT99, undefined);
 });

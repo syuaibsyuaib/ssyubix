@@ -9,6 +9,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 ### Added
 
 - Added room-scoped capability registry storage in the Cloudflare relay with MCP resources for agents and skills
+- Added self-service capability tools for reading, updating, resetting, and changing availability on the active room profile
 
 ## [2.1.0] - 2026-03-09
 

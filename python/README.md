@@ -54,6 +54,10 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `room_list`
 - `room_info`
 - `room_local_summary`
+- `capability_get_self`
+- `capability_upsert_self`
+- `capability_set_availability`
+- `capability_remove_self`
 - `agent_send`
 - `agent_broadcast`
 - `agent_read_inbox`

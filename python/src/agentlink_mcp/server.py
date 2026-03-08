@@ -12,7 +12,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urlparse
 
@@ -21,7 +21,7 @@ import websockets
 import websockets.client
 from websockets.exceptions import ConnectionClosed
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -819,6 +819,28 @@ async def _fetch_capability_resource(room_id: str, resource_path: str) -> dict[s
     }
 
 
+def _require_capability_context() -> tuple[str, str]:
+    if current_room is None or not isinstance(current_room.get("room_id"), str):
+        raise RuntimeError("Tidak sedang di dalam room. Jalankan room_join dulu.")
+    if ws_conn is None:
+        raise RuntimeError("Koneksi room sedang tidak aktif. Coba tunggu reconnect atau join ulang.")
+    if not isinstance(agent_id, str) or not agent_id:
+        raise RuntimeError("Agent ID belum tersedia. Coba join room ulang.")
+    return current_room["room_id"].upper(), agent_id
+
+
+async def _fetch_self_capability_profile() -> dict[str, Any]:
+    room_id, self_agent_id = _require_capability_context()
+    payload = await _fetch_capability_resource(
+        room_id,
+        f"agents/{quote(self_agent_id, safe='')}",
+    )
+    agent_payload = payload.get("agent")
+    if not isinstance(agent_payload, dict):
+        raise RuntimeError("Capability profile diri sendiri tidak ditemukan.")
+    return payload
+
+
 def _schedule_retry_replay(delay: float = 0.0):
     global retry_replay_task
     if current_room is None or ws_conn is None:
@@ -1096,6 +1118,12 @@ def _handle_incoming(msg: dict):
             future = pending_acks.pop(request_id, None)
             if future is not None and not future.done():
                 future.set_result(msg)
+    elif t == "error":
+        request_id = msg.get("request_id")
+        if isinstance(request_id, str):
+            future = pending_acks.pop(request_id, None)
+            if future is not None and not future.done():
+                future.set_exception(RuntimeError(str(msg.get("error", "Unknown room error"))))
 
 async def heartbeat_loop():
     global ws_conn
@@ -1177,6 +1205,87 @@ class LocalRoomSummaryInput(BaseModel):
     room_id: Optional[str] = Field(default=None, description="ID room untuk membaca snapshot lokal tertentu")
 
 
+class CapabilitySkillInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    id: str = Field(..., min_length=1, max_length=64, description="ID skill stabil, contoh: code_review")
+    name: str = Field(..., min_length=1, max_length=80, description="Nama skill")
+    description: str = Field(default="", max_length=240, description="Deskripsi singkat skill")
+    tags: list[str] = Field(default_factory=list, description="Tag skill")
+    examples: list[str] = Field(default_factory=list, description="Contoh use case ringkas")
+    input_modes: list[str] = Field(default_factory=list, description="Mode input yang didukung")
+    output_modes: list[str] = Field(default_factory=list, description="Mode output yang didukung")
+
+    @field_validator("id")
+    @classmethod
+    def normalize_skill_id(cls, value: str) -> str:
+        normalized = value.strip().lower().replace(" ", "_")
+        if not normalized:
+            raise ValueError("skill id tidak boleh kosong")
+        if not all(ch.isalnum() or ch in "._-" for ch in normalized):
+            raise ValueError("skill id hanya boleh berisi huruf kecil, angka, titik, underscore, atau dash")
+        return normalized
+
+    @field_validator("tags", "examples", "input_modes", "output_modes")
+    @classmethod
+    def normalize_string_lists(cls, value: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for entry in value:
+            normalized = " ".join(entry.split()).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+
+class CapabilityUpsertInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    summary: Optional[str] = Field(default=None, max_length=500, description="Ringkasan singkat agent")
+    version: Optional[str] = Field(default=None, max_length=64, description="Versi capability card agent")
+    tool_access: Optional[list[str]] = Field(default=None, description="Akses tool yang dimiliki agent")
+    constraints: Optional[list[str]] = Field(default=None, description="Batasan atau guardrail agent")
+    max_concurrent_tasks: Optional[int] = Field(default=None, ge=1, le=100, description="Batas tugas paralel")
+    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Perkiraan beban kerja saat ini")
+    skills: Optional[list[CapabilitySkillInput]] = Field(default=None, description="Daftar skill yang dideklarasikan")
+
+    @field_validator("tool_access", "constraints")
+    @classmethod
+    def normalize_optional_lists(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for entry in value:
+            normalized = " ".join(entry.split()).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        if not self.model_fields_set:
+            raise ValueError("Setidaknya satu field capability harus diisi.")
+        if (
+            self.max_concurrent_tasks is not None
+            and self.current_load is not None
+            and self.current_load > self.max_concurrent_tasks
+        ):
+            raise ValueError("current_load tidak boleh melebihi max_concurrent_tasks.")
+        return self
+
+
+class CapabilityAvailabilityInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    availability: Literal["available", "busy", "away", "dnd"] = Field(
+        ...,
+        description="Status kesiapan kerja agent",
+    )
+    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Perkiraan beban kerja saat ini")
+
+
 @mcp.resource(
     "ssyubix://rooms/{room_id}/agents",
     name="ssyubix-room-capability-agents",
@@ -1219,6 +1328,138 @@ async def capability_skills_resource(room_id: str) -> str:
 async def capability_skill_resource(room_id: str, skill_id: str) -> str:
     payload = await _fetch_capability_resource(room_id, f"skills/{quote(skill_id, safe='')}")
     return json.dumps(payload, indent=2)
+
+
+@mcp.tool(name="capability_get_self")
+async def capability_get_self() -> str:
+    """
+    Baca capability profile agent ini pada room yang sedang aktif.
+
+    Returns:
+        str: JSON capability profile diri sendiri
+    """
+    try:
+        room_id, self_agent_id = _require_capability_context()
+        payload = await _fetch_self_capability_profile()
+        return json.dumps({
+            "success": True,
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "resource_uri": f"ssyubix://rooms/{room_id}/agents/{self_agent_id}",
+            **payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="capability_upsert_self")
+async def capability_upsert_self(params: CapabilityUpsertInput) -> str:
+    """
+    Simpan atau perbarui capability card agent ini pada room aktif.
+
+    Returns:
+        str: JSON status update + profile terbaru
+    """
+    try:
+        room_id, self_agent_id = _require_capability_context()
+        payload = {"type": "capability_upsert"}
+        payload.update(params.model_dump(exclude_unset=True))
+
+        request_id, ack = await _await_ack(payload)
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat menyimpan capability profile.",
+            })
+
+        profile_payload = await _fetch_self_capability_profile()
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "resource_uri": f"ssyubix://rooms/{room_id}/agents/{self_agent_id}",
+            **profile_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="capability_set_availability")
+async def capability_set_availability(params: CapabilityAvailabilityInput) -> str:
+    """
+    Update availability dan current load capability card agent ini.
+
+    Returns:
+        str: JSON status update + profile terbaru
+    """
+    try:
+        room_id, self_agent_id = _require_capability_context()
+        payload = {
+            "type": "capability_set_availability",
+            "availability": params.availability,
+        }
+        if params.current_load is not None:
+            payload["current_load"] = params.current_load
+
+        request_id, ack = await _await_ack(payload)
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat memperbarui availability capability.",
+            })
+
+        profile_payload = await _fetch_self_capability_profile()
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "resource_uri": f"ssyubix://rooms/{room_id}/agents/{self_agent_id}",
+            **profile_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="capability_remove_self")
+async def capability_remove_self() -> str:
+    """
+    Hapus capability card kustom agent ini dan kembali ke profil minimal room.
+
+    Returns:
+        str: JSON status reset capability
+    """
+    try:
+        room_id, self_agent_id = _require_capability_context()
+        request_id, ack = await _await_ack({"type": "capability_remove"})
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat menghapus capability profile.",
+            })
+
+        profile_payload = await _fetch_self_capability_profile()
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "resource_uri": f"ssyubix://rooms/{room_id}/agents/{self_agent_id}",
+            "message": "Capability profile kustom dihapus. Resource self sekarang kembali ke profil minimal room.",
+            **profile_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
 
 @mcp.tool(name="agent_register")

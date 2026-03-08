@@ -27,7 +27,12 @@ export interface RoomEventPayload extends SequencedRoomPayload {
 
 export interface AckPayload {
   type: "ack";
-  action: "send" | "broadcast";
+  action:
+    | "send"
+    | "broadcast"
+    | "capability_upsert"
+    | "capability_set_availability"
+    | "capability_remove";
   room_id: string;
   request_id?: string;
   accepted: boolean;
@@ -97,7 +102,12 @@ export function createRoomEvent(params: {
 }
 
 export function createAck(params: {
-  action: "send" | "broadcast";
+  action:
+    | "send"
+    | "broadcast"
+    | "capability_upsert"
+    | "capability_set_availability"
+    | "capability_remove";
   roomId: string;
   requestId?: string;
   accepted?: boolean;

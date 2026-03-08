@@ -53,6 +53,10 @@ Optional environment variables:
 - `room_leave`
 - `room_list`
 - `room_info`
+- `capability_get_self`
+- `capability_upsert_self`
+- `capability_set_availability`
+- `capability_remove_self`
 - `agent_send`
 - `agent_broadcast`
 - `agent_read_inbox`
