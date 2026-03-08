@@ -29,6 +29,8 @@ uvx ssyubix
 
 - `AGENT_NAME`: optional display name for the current agent
 - `AGENTLINK_URL`: optional override for the default Worker endpoint
+- `SSYUBIX_LOCAL_STATE_DIR`: optional override for local cache/checkpoint storage
+- `SSYUBIX_LOCAL_INBOX_LIMIT`: optional max cached inbox entries per room (default `200`)
 
 Default Worker endpoint:
 
@@ -48,6 +50,11 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `agent_broadcast`
 - `agent_read_inbox`
 - `agent_list`
+
+`agent_read_inbox` supports local unread tracking with:
+
+- `only_unread`: return only entries above the local per-device read cursor
+- `mark_read`: advance the local per-device read cursor without clearing cloud state
 
 ## Development
 

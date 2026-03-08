@@ -1,5 +1,8 @@
 import unittest
 import asyncio
+import json
+import tempfile
+from pathlib import Path
 
 from agentlink_mcp import server
 
@@ -9,6 +12,9 @@ class HandleIncomingTests(unittest.TestCase):
         self.original_agent_id = server.agent_id
         self.original_inbox = list(server.inbox)
         self.original_current_room = server.current_room
+        self.original_local_state_dir = server.local_state_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        server.local_state_dir = Path(self.tempdir.name)
         server.agent_id = None
         server.current_room = {"room_id": "ROOM42", "last_sequence": 0}
         server.inbox.clear()
@@ -17,6 +23,8 @@ class HandleIncomingTests(unittest.TestCase):
         server.agent_id = self.original_agent_id
         server.current_room = self.original_current_room
         server.inbox[:] = self.original_inbox
+        server.local_state_dir = self.original_local_state_dir
+        self.tempdir.cleanup()
 
     def test_welcome_updates_agent_id_and_tracks_existing_agents(self):
         server._handle_incoming(
@@ -160,6 +168,180 @@ class AckHandlingTests(unittest.IsolatedAsyncioTestCase):
         result = await future
         self.assertEqual(result["message_id"], "ROOM42:9")
         self.assertTrue(result["delivered"])
+
+
+class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.original_agent_id = server.agent_id
+        self.original_inbox = list(server.inbox)
+        self.original_current_room = server.current_room
+        self.original_local_state_dir = server.local_state_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        server.local_state_dir = Path(self.tempdir.name)
+        server.agent_id = "LOCAL123"
+        server.current_room = None
+        server.inbox.clear()
+
+    def tearDown(self):
+        server.agent_id = self.original_agent_id
+        server.current_room = self.original_current_room
+        server.inbox[:] = self.original_inbox
+        server.local_state_dir = self.original_local_state_dir
+        self.tempdir.cleanup()
+
+    def test_persist_and_restore_local_room_cache(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 7,
+            "last_read_sequence": 5,
+        }
+        server.inbox[:] = [
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "cached hello",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:6",
+                "sequence": 6,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:00+00:00",
+            },
+            {
+                "type": "event",
+                "event": "agent_joined",
+                "from": "peer-two",
+                "agent_id": "PEER0002",
+                "message_id": "ROOM42:7",
+                "sequence": 7,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:01+00:00",
+            },
+        ]
+
+        server._persist_local_room_state()
+        cache_path = server._room_cache_path("ROOM42")
+        self.assertTrue(cache_path.exists())
+
+        server.inbox[:] = []
+        server.current_room = {"room_id": "ROOM42", "last_sequence": 9}
+        server._restore_local_room_state("ROOM42")
+
+        self.assertEqual(len(server.inbox), 2)
+        self.assertEqual(server.current_room["last_read_sequence"], 5)
+        self.assertEqual(server.current_room["local_cached_message_count"], 2)
+        self.assertEqual(server.current_room["local_cached_last_sequence"], 7)
+        self.assertTrue(server.current_room["local_cache_restored"])
+
+    async def test_agent_read_inbox_updates_local_cursor(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 3,
+            "last_read_sequence": 2,
+            "local_cache_path": str(server._room_cache_path("ROOM42")),
+        }
+        server.inbox[:] = [
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "msg-1",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:1",
+                "sequence": 1,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:00+00:00",
+            },
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "msg-2",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:2",
+                "sequence": 2,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:01+00:00",
+            },
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "msg-3",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:3",
+                "sequence": 3,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:02+00:00",
+            },
+        ]
+        server._persist_local_room_state()
+
+        payload = json.loads(
+            await server.agent_read_inbox(
+                server.ReadInboxInput(limit=10, only_unread=True, mark_read=True, clear=False)
+            )
+        )
+
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["messages"][0]["sequence"], 3)
+        self.assertEqual(payload["last_read_sequence"], 3)
+        self.assertEqual(payload["unread_count"], 0)
+
+        cached = json.loads(server._room_cache_path("ROOM42").read_text(encoding="utf-8"))
+        self.assertEqual(cached["last_read_sequence"], 3)
+
+    async def test_agent_read_inbox_clear_updates_local_cache(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 2,
+            "last_read_sequence": 0,
+            "local_cache_path": str(server._room_cache_path("ROOM42")),
+        }
+        server.inbox[:] = [
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "msg-1",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:1",
+                "sequence": 1,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:00+00:00",
+            },
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "msg-2",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:2",
+                "sequence": 2,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:01+00:00",
+            },
+        ]
+
+        payload = json.loads(
+            await server.agent_read_inbox(
+                server.ReadInboxInput(limit=10, only_unread=False, mark_read=True, clear=True)
+            )
+        )
+
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["last_read_sequence"], 2)
+        self.assertEqual(payload["total_in_inbox"], 0)
+
+        cached = json.loads(server._room_cache_path("ROOM42").read_text(encoding="utf-8"))
+        self.assertEqual(cached["messages"], [])
+        self.assertEqual(cached["last_read_sequence"], 2)
 
 
 if __name__ == "__main__":
