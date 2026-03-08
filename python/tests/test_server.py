@@ -206,6 +206,20 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
             "room_id": "ROOM42",
             "last_sequence": 7,
             "last_read_sequence": 5,
+            "joined_at": "2026-03-09T00:00:00+00:00",
+            "last_seen_at": "2026-03-09T00:00:05+00:00",
+            "presence": "online",
+            "heartbeat_interval_seconds": 30,
+            "heartbeat_timeout_seconds": 90,
+            "peers": {
+                "PEER0002": {
+                    "agent_id": "PEER0002",
+                    "name": "peer-two",
+                    "presence": "online",
+                    "joined_at": "2026-03-09T00:00:01+00:00",
+                    "last_seen_at": "2026-03-09T00:00:05+00:00",
+                }
+            },
             "retry_queue": [
                 {
                     "retry_id": "retry-1",
@@ -261,6 +275,9 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(server.current_room["local_cache_restored"])
         self.assertEqual(server.current_room["local_retry_queue_count"], 1)
         self.assertEqual(server.current_room["retry_queue"][0]["retry_id"], "retry-1")
+        self.assertEqual(server.current_room["local_summary"]["peer_count"], 1)
+        self.assertEqual(server.current_room["local_summary"]["retry_queue_count"], 1)
+        self.assertEqual(server.current_room["local_summary"]["recent_activity"]["last_event"], "agent_joined")
 
     async def test_agent_read_inbox_updates_local_cursor(self):
         server.current_room = {
@@ -457,6 +474,100 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(server.current_room["retry_queue"], [])
         self.assertEqual(server.current_room["local_retry_queue_count"], 0)
+
+    async def test_room_local_summary_returns_snapshot_for_specific_room(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 2,
+            "last_read_sequence": 1,
+            "joined_at": "2026-03-09T00:00:00+00:00",
+            "last_seen_at": "2026-03-09T00:00:02+00:00",
+            "presence": "online",
+            "heartbeat_interval_seconds": 30,
+            "heartbeat_timeout_seconds": 90,
+            "peers": {
+                "PEER0001": {
+                    "agent_id": "PEER0001",
+                    "name": "peer-one",
+                    "presence": "online",
+                    "joined_at": "2026-03-09T00:00:01+00:00",
+                    "last_seen_at": "2026-03-09T00:00:02+00:00",
+                }
+            },
+            "retry_queue": [],
+        }
+        server.inbox[:] = [
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "hello from cache",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:2",
+                "sequence": 2,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:02+00:00",
+            }
+        ]
+        server._persist_local_room_state()
+        server.current_room = None
+
+        payload = json.loads(
+            await server.room_local_summary(server.LocalRoomSummaryInput(room_id="ROOM42"))
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["summary"]["room_id"], "ROOM42")
+        self.assertEqual(payload["summary"]["peer_count"], 1)
+        self.assertEqual(payload["summary"]["unread_count"], 1)
+        self.assertEqual(payload["summary"]["recent_activity"]["last_message_preview"], "hello from cache")
+
+    async def test_room_local_summary_lists_cached_rooms_when_offline(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 1,
+            "last_read_sequence": 0,
+            "retry_queue": [],
+        }
+        server.inbox[:] = [
+            {
+                "type": "message",
+                "from": "peer-one",
+                "agent_id": "PEER0001",
+                "content": "hello",
+                "msg_type": "text",
+                "broadcast": False,
+                "message_id": "ROOM42:1",
+                "sequence": 1,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-09T00:00:00+00:00",
+            }
+        ]
+        server._persist_local_room_state()
+        server.current_room = None
+        server.inbox[:] = []
+
+        payload = json.loads(
+            await server.room_local_summary(server.LocalRoomSummaryInput())
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["rooms"][0]["room_id"], "ROOM42")
+        self.assertIn("summary", payload["rooms"][0])
+
+    def test_local_summary_marks_stale_snapshot(self):
+        summary = server._build_local_room_summary(
+            room_id="ROOM99",
+            room_state={},
+            messages=[],
+            retry_queue=[],
+            cached_at="2000-01-01T00:00:00+00:00",
+        )
+
+        self.assertTrue(summary["is_stale"])
+        self.assertGreater(summary["age_seconds"], 0)
 
 
 if __name__ == "__main__":
