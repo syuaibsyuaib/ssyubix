@@ -176,10 +176,17 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.original_inbox = list(server.inbox)
         self.original_current_room = server.current_room
         self.original_local_state_dir = server.local_state_dir
+        self.original_ws_conn = server.ws_conn
+        self.original_retry_replay_task = server.retry_replay_task
+        self.original_pending = dict(server.pending_acks)
+        self.original_await_ack = server._await_ack
         self.tempdir = tempfile.TemporaryDirectory()
         server.local_state_dir = Path(self.tempdir.name)
         server.agent_id = "LOCAL123"
         server.current_room = None
+        server.ws_conn = None
+        server.retry_replay_task = None
+        server.pending_acks.clear()
         server.inbox.clear()
 
     def tearDown(self):
@@ -187,6 +194,11 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         server.current_room = self.original_current_room
         server.inbox[:] = self.original_inbox
         server.local_state_dir = self.original_local_state_dir
+        server.ws_conn = self.original_ws_conn
+        server.retry_replay_task = self.original_retry_replay_task
+        server.pending_acks.clear()
+        server.pending_acks.update(self.original_pending)
+        server._await_ack = self.original_await_ack
         self.tempdir.cleanup()
 
     def test_persist_and_restore_local_room_cache(self):
@@ -194,6 +206,20 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
             "room_id": "ROOM42",
             "last_sequence": 7,
             "last_read_sequence": 5,
+            "retry_queue": [
+                {
+                    "retry_id": "retry-1",
+                    "room_id": "ROOM42",
+                    "action": "send",
+                    "payload": {"type": "send", "to": "PEER0001", "content": "retry", "msg_type": "text"},
+                    "created_at": "2026-03-09T00:00:00+00:00",
+                    "updated_at": "2026-03-09T00:00:00+00:00",
+                    "expires_at": "2026-03-09T06:00:00+00:00",
+                    "attempts": 1,
+                    "last_error": "offline",
+                    "next_retry_at": "2026-03-09T00:00:05+00:00",
+                }
+            ],
         }
         server.inbox[:] = [
             {
@@ -233,6 +259,8 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.current_room["local_cached_message_count"], 2)
         self.assertEqual(server.current_room["local_cached_last_sequence"], 7)
         self.assertTrue(server.current_room["local_cache_restored"])
+        self.assertEqual(server.current_room["local_retry_queue_count"], 1)
+        self.assertEqual(server.current_room["retry_queue"][0]["retry_id"], "retry-1")
 
     async def test_agent_read_inbox_updates_local_cursor(self):
         server.current_room = {
@@ -342,6 +370,93 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         cached = json.loads(server._room_cache_path("ROOM42").read_text(encoding="utf-8"))
         self.assertEqual(cached["messages"], [])
         self.assertEqual(cached["last_read_sequence"], 2)
+
+    async def test_agent_send_queues_when_disconnected(self):
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 0,
+            "last_read_sequence": 0,
+            "retry_queue": [],
+        }
+        server.ws_conn = None
+
+        payload = json.loads(
+            await server.agent_send(
+                server.SendInput(peer_id="PEER0001", message="queued", msg_type="text")
+            )
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertTrue(payload["queued_for_retry"])
+        self.assertEqual(payload["retry_queue_count"], 1)
+        self.assertEqual(server.current_room["retry_queue"][0]["action"], "send")
+        self.assertEqual(server.current_room["retry_queue"][0]["payload"]["to"], "PEER0001")
+
+    async def test_agent_send_queues_when_not_delivered(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            return "REQ123", {
+                "accepted": False,
+                "delivered": False,
+                "recipient_count": 0,
+                "message_id": None,
+                "sequence": None,
+            }
+
+        server._await_ack = fake_await_ack
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 0,
+            "last_read_sequence": 0,
+            "retry_queue": [],
+        }
+        server.ws_conn = object()
+
+        payload = json.loads(
+            await server.agent_send(
+                server.SendInput(peer_id="PEER0001", message="queued", msg_type="text")
+            )
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertTrue(payload["queued_for_retry"])
+        self.assertEqual(server.current_room["local_retry_queue_count"], 1)
+
+    async def test_replay_retry_queue_removes_successful_entry(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            return "REQ123", {
+                "accepted": True,
+                "delivered": True,
+                "recipient_count": 1,
+                "message_id": "ROOM42:4",
+                "sequence": 4,
+            }
+
+        server._await_ack = fake_await_ack
+        server.current_room = {
+            "room_id": "ROOM42",
+            "last_sequence": 3,
+            "last_read_sequence": 0,
+            "retry_queue": [
+                {
+                    "retry_id": "retry-1",
+                    "room_id": "ROOM42",
+                    "action": "send",
+                    "payload": {"type": "send", "to": "PEER0001", "content": "retry", "msg_type": "text"},
+                    "created_at": "2000-01-01T00:00:00+00:00",
+                    "updated_at": "2000-01-01T00:00:00+00:00",
+                    "expires_at": "2099-03-09T06:00:00+00:00",
+                    "attempts": 0,
+                    "last_error": "offline",
+                    "next_retry_at": "2000-01-01T00:00:00+00:00",
+                }
+            ],
+        }
+        server.ws_conn = object()
+
+        await server._replay_retry_queue()
+
+        self.assertEqual(server.current_room["retry_queue"], [])
+        self.assertEqual(server.current_room["local_retry_queue_count"], 0)
 
 
 if __name__ == "__main__":

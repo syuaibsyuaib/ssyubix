@@ -31,6 +31,9 @@ AGENT_NAME    = os.environ.get("AGENT_NAME", f"agent-{uuid.uuid4().hex[:6]}")
 WS_BASE       = AGENTLINK_URL.replace("https://", "wss://").replace("http://", "ws://")
 LOCAL_STATE_VERSION = 1
 LOCAL_INBOX_LIMIT = max(10, int(os.environ.get("SSYUBIX_LOCAL_INBOX_LIMIT", "200")))
+LOCAL_RETRY_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_LIMIT", "50")))
+LOCAL_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS", "5")))
+LOCAL_RETRY_TTL_SECONDS = max(60, int(os.environ.get("SSYUBIX_LOCAL_RETRY_TTL_SECONDS", "21600")))
 
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
@@ -42,6 +45,7 @@ http_session: Optional[aiohttp.ClientSession] = None
 pending_acks: dict[str, asyncio.Future] = {}
 room_credentials: Optional[dict] = None
 reconnect_task: Optional[asyncio.Task] = None
+retry_replay_task: Optional[asyncio.Task] = None
 auto_reconnect_enabled: bool = False
 
 
@@ -90,6 +94,71 @@ def _max_message_sequence(messages: list[dict]) -> int:
     return max(sequences, default=0)
 
 
+def _retry_queue() -> list[dict]:
+    if current_room is None:
+        return []
+    queue = current_room.setdefault("retry_queue", [])
+    if isinstance(queue, list):
+        return queue
+    current_room["retry_queue"] = []
+    return current_room["retry_queue"]
+
+
+def _iso_to_timestamp(value: Optional[str]) -> float:
+    if not isinstance(value, str):
+        return 0.0
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _normalize_retry_entry(entry: dict) -> Optional[dict]:
+    if not isinstance(entry, dict):
+        return None
+    action = entry.get("action")
+    payload = entry.get("payload")
+    room_id = entry.get("room_id")
+    if action not in {"send", "broadcast"} or not isinstance(payload, dict) or not isinstance(room_id, str):
+        return None
+    retry_id = entry.get("retry_id")
+    if not isinstance(retry_id, str) or not retry_id:
+        retry_id = uuid.uuid4().hex
+    created_at = entry.get("created_at")
+    if not isinstance(created_at, str):
+        created_at = _now_iso()
+    expires_at = entry.get("expires_at")
+    if not isinstance(expires_at, str):
+        expires_at = datetime.fromtimestamp(
+            _iso_to_timestamp(created_at) + LOCAL_RETRY_TTL_SECONDS,
+            tz=timezone.utc,
+        ).isoformat()
+    return {
+        "retry_id": retry_id,
+        "room_id": room_id.upper(),
+        "action": action,
+        "payload": payload,
+        "created_at": created_at,
+        "updated_at": entry.get("updated_at") if isinstance(entry.get("updated_at"), str) else created_at,
+        "expires_at": expires_at,
+        "attempts": max(0, _safe_int(entry.get("attempts"))),
+        "last_error": entry.get("last_error") if isinstance(entry.get("last_error"), str) else None,
+        "next_retry_at": entry.get("next_retry_at") if isinstance(entry.get("next_retry_at"), str) else created_at,
+    }
+
+
+def _normalized_retry_queue(entries: Any) -> list[dict]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        next_entry = _normalize_retry_entry(entry)
+        if next_entry is not None:
+            normalized.append(next_entry)
+    normalized.sort(key=lambda item: (_iso_to_timestamp(item.get("next_retry_at")), item["created_at"]))
+    return normalized[-LOCAL_RETRY_LIMIT:]
+
+
 def _write_json_file(path: Path, payload: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -125,6 +194,7 @@ def _load_local_room_state(room_id: str) -> dict:
     return {
         "room_id": payload.get("room_id", room_id.upper()),
         "messages": messages,
+        "retry_queue": _normalized_retry_queue(payload.get("retry_queue")),
         "last_read_sequence": _safe_int(payload.get("last_read_sequence")),
         "last_sequence": _safe_int(payload.get("last_sequence")),
         "cached_at": payload.get("cached_at"),
@@ -151,6 +221,7 @@ def _persist_local_room_state():
         "last_sequence": _safe_int(current_room.get("last_sequence")),
         "last_read_sequence": _safe_int(current_room.get("last_read_sequence")),
         "messages": messages,
+        "retry_queue": _normalized_retry_queue(current_room.get("retry_queue")),
     }
     try:
         _write_json_file(_room_cache_path(room_id), payload)
@@ -182,12 +253,14 @@ def _restore_local_room_state(room_id: str):
     inbox[:] = merged_messages[-LOCAL_INBOX_LIMIT:]
     if current_room is None:
         return
+    current_room["retry_queue"] = cached["retry_queue"]
     current_room["last_read_sequence"] = cached["last_read_sequence"]
     current_room["local_cache_path"] = str(_room_cache_path(room_id))
     current_room["local_cached_message_count"] = len(inbox)
     current_room["local_cached_last_sequence"] = cached["last_sequence"]
     current_room["local_cache_restored"] = cached["restored"]
     current_room["local_cache_restored_at"] = cached.get("cached_at")
+    current_room["local_retry_queue_count"] = len(cached["retry_queue"])
     _persist_local_room_state()
 
 
@@ -200,6 +273,91 @@ def _append_inbox_entry(entry: dict):
     inbox.append(entry)
     if len(inbox) > LOCAL_INBOX_LIMIT:
         del inbox[:-LOCAL_INBOX_LIMIT]
+    _persist_local_room_state()
+
+
+def _retry_backoff_seconds(attempts: int) -> int:
+    return min(300, 5 * (2 ** min(attempts, 5)))
+
+
+def _is_retry_entry_expired(entry: dict) -> bool:
+    return _iso_to_timestamp(entry.get("expires_at")) <= time.time()
+
+
+def _enqueue_retry_action(action: str, payload: dict, *, reason: str) -> dict:
+    if current_room is None:
+        raise RuntimeError("Tidak sedang di dalam room.")
+    entry = _normalize_retry_entry({
+        "retry_id": uuid.uuid4().hex,
+        "room_id": current_room.get("room_id"),
+        "action": action,
+        "payload": payload,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "expires_at": datetime.now(timezone.utc).timestamp() + LOCAL_RETRY_TTL_SECONDS,
+        "attempts": 0,
+        "last_error": reason,
+        "next_retry_at": _now_iso(),
+    })
+    if entry is None:
+        raise RuntimeError("Gagal menyiapkan retry queue lokal.")
+    entry["expires_at"] = datetime.fromtimestamp(
+        time.time() + LOCAL_RETRY_TTL_SECONDS,
+        tz=timezone.utc,
+    ).isoformat()
+    queue = _retry_queue()
+    queue.append(entry)
+    queue[:] = _normalized_retry_queue(queue)
+    current_room["local_retry_queue_count"] = len(queue)
+    _persist_local_room_state()
+    return entry
+
+
+def _drop_retry_entry(retry_id: str):
+    if current_room is None:
+        return
+    queue = _retry_queue()
+    queue[:] = [entry for entry in queue if entry.get("retry_id") != retry_id]
+    current_room["local_retry_queue_count"] = len(queue)
+    _persist_local_room_state()
+
+
+def _mark_retry_entry_attempt(entry: dict, *, error: str):
+    queue = _retry_queue()
+    for candidate in queue:
+        if candidate.get("retry_id") != entry.get("retry_id"):
+            continue
+        attempts = _safe_int(candidate.get("attempts")) + 1
+        candidate["attempts"] = attempts
+        candidate["updated_at"] = _now_iso()
+        candidate["last_error"] = error
+        candidate["next_retry_at"] = datetime.fromtimestamp(
+            time.time() + _retry_backoff_seconds(attempts),
+            tz=timezone.utc,
+        ).isoformat()
+        break
+    queue[:] = [
+        candidate
+        for candidate in _normalized_retry_queue(queue)
+        if _safe_int(candidate.get("attempts")) < LOCAL_RETRY_MAX_ATTEMPTS
+        and not _is_retry_entry_expired(candidate)
+    ]
+    if current_room is not None:
+        current_room["local_retry_queue_count"] = len(queue)
+    _persist_local_room_state()
+
+
+def _prune_retry_queue():
+    if current_room is None:
+        return
+    queue = _retry_queue()
+    queue[:] = [
+        entry
+        for entry in _normalized_retry_queue(queue)
+        if _safe_int(entry.get("attempts")) < LOCAL_RETRY_MAX_ATTEMPTS
+        and not _is_retry_entry_expired(entry)
+    ]
+    current_room["local_retry_queue_count"] = len(queue)
     _persist_local_room_state()
 
 def _update_room_sequence(msg: dict):
@@ -264,6 +422,28 @@ def _cancel_reconnect_task():
         reconnect_task.cancel()
     reconnect_task = None
 
+
+def _cancel_retry_replay_task():
+    global retry_replay_task
+    if retry_replay_task is not None and not retry_replay_task.done():
+        retry_replay_task.cancel()
+    retry_replay_task = None
+
+
+def _schedule_retry_replay(delay: float = 0.0):
+    global retry_replay_task
+    if current_room is None or ws_conn is None:
+        return
+    if not _retry_queue():
+        return
+    if retry_replay_task is not None and not retry_replay_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    retry_replay_task = loop.create_task(_replay_retry_queue(delay=delay))
+
 async def _open_room_connection(rid: str, token: Optional[str]) -> tuple[Any, dict]:
     query = {"name": agent_name, "session_id": client_session_id}
     if token:
@@ -314,10 +494,13 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
         "local_cached_last_sequence": 0,
         "local_cache_restored": False,
         "local_cache_restored_at": None,
+        "retry_queue": [],
+        "local_retry_queue_count": 0,
         "peers": peers,
     }
     room_credentials = {"room_id": rid, "token": token}
     ws_conn = conn
+    _restore_local_room_state(rid)
     if reconnecting:
         _append_inbox_entry({
             "type": "event",
@@ -327,6 +510,7 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
             "session_resumed": current_room.get("session_resumed", False),
             "timestamp": _now_iso(),
         })
+    _schedule_retry_replay(delay=1.0 if reconnecting else 0.0)
     return welcome
 
 def _schedule_reconnect():
@@ -359,6 +543,48 @@ async def _await_ack(payload: dict, timeout: float = 5.0) -> tuple[str, Optional
     finally:
         if request_id in pending_acks and pending_acks[request_id].done():
             pending_acks.pop(request_id, None)
+
+
+async def _replay_retry_queue(delay: float = 0.0):
+    global retry_replay_task
+    try:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        while current_room is not None and ws_conn is not None:
+            _prune_retry_queue()
+            queue = list(_retry_queue())
+            if not queue:
+                return
+            now = time.time()
+            ready_entry = None
+            for entry in queue:
+                if _iso_to_timestamp(entry.get("next_retry_at")) <= now:
+                    ready_entry = entry
+                    break
+            if ready_entry is None:
+                return
+            try:
+                _, ack = await _await_ack(ready_entry["payload"], timeout=5.0)
+            except Exception as exc:
+                _mark_retry_entry_attempt(ready_entry, error=str(exc))
+                return
+
+            delivered = isinstance(ack, dict) and bool(ack.get("delivered", False))
+            if delivered:
+                _drop_retry_entry(ready_entry["retry_id"])
+                continue
+
+            if ack is None:
+                _mark_retry_entry_attempt(ready_entry, error="ACK timeout")
+                return
+
+            _mark_retry_entry_attempt(
+                ready_entry,
+                error=f"Not delivered ({ready_entry['action']})",
+            )
+            return
+    finally:
+        retry_replay_task = None
 
 async def _reconnect_loop():
     global reconnect_task
@@ -444,6 +670,7 @@ def _handle_incoming(msg: dict):
                 "last_seen_at": peer.get("last_seen_at"),
                 "timestamp": _now_iso()})
         _persist_local_room_state()
+        _schedule_retry_replay(delay=0.5)
     elif t == "message":
         _update_room_sequence(msg)
         _append_inbox_entry({"type": "message", "from": msg.get("from_name", "unknown"),
@@ -460,6 +687,7 @@ def _handle_incoming(msg: dict):
             _set_peer_state(event_agent_id, name=msg.get("name"),
                 presence=msg.get("presence", "online"), joined_at=msg.get("joined_at"),
                 last_seen_at=msg.get("last_seen_at"))
+            _schedule_retry_replay(delay=0.5)
         elif event_name == "agent_left":
             _remove_peer_state(event_agent_id)
         _append_inbox_entry({"type": "event", "event": msg.get("event"),
@@ -514,6 +742,7 @@ async def lifespan(server):
     yield {}
     t1.cancel(); t2.cancel()
     _cancel_reconnect_task()
+    _cancel_retry_replay_task()
     if ws_conn:
         try: await ws_conn.close()
         except Exception: pass
@@ -609,6 +838,7 @@ async def room_join(params: JoinRoomInput) -> str:
     rid = params.room_id.upper()
     auto_reconnect_enabled = False
     _cancel_reconnect_task()
+    _cancel_retry_replay_task()
 
     if ws_conn:
         try: await ws_conn.close()
@@ -619,7 +849,6 @@ async def room_join(params: JoinRoomInput) -> str:
 
     try:
         welcome = await _connect_room(rid, params.token, reconnecting=False)
-        _restore_local_room_state(rid)
         auto_reconnect_enabled = True
         existing = welcome.get("agents", [])
 
@@ -630,6 +859,7 @@ async def room_join(params: JoinRoomInput) -> str:
             "heartbeat_timeout_seconds": current_room.get("heartbeat_timeout_seconds") if current_room else None,
             "last_read_sequence": current_room.get("last_read_sequence") if current_room else 0,
             "local_cached_message_count": current_room.get("local_cached_message_count") if current_room else 0,
+            "local_retry_queue_count": current_room.get("local_retry_queue_count") if current_room else 0,
             "message": welcome.get("message", f"Berhasil join room '{rid}'.")}, indent=2)
 
     except asyncio.TimeoutError:
@@ -651,7 +881,11 @@ async def room_leave() -> str:
         return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
     auto_reconnect_enabled = False
     _cancel_reconnect_task()
+    _cancel_retry_replay_task()
     room_credentials = None
+    current_room["retry_queue"] = []
+    current_room["local_retry_queue_count"] = 0
+    _persist_local_room_state()
     try:
         if ws_conn: await ws_conn.close()
     except Exception: pass
@@ -686,6 +920,7 @@ async def room_info() -> str:
     """
     if not current_room:
         return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
+    current_room["local_retry_queue_count"] = len(_retry_queue())
     return json.dumps({"success": True, "room": current_room,
         "my_agent_id": agent_id, "connected": ws_conn is not None}, indent=2)
 
@@ -700,24 +935,52 @@ async def agent_send(params: SendInput) -> str:
     Returns:
         str: JSON status pengiriman
     """
-    if ws_conn is None:
+    payload = {"type": "send", "to": params.peer_id,
+        "content": params.message, "msg_type": params.msg_type}
+    if current_room is None:
         return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
+    if ws_conn is None:
+        queued = _enqueue_retry_action("send", payload, reason="WebSocket tidak terhubung")
+        return json.dumps({"success": False, "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue()),
+            "message": "Pesan disimpan di retry queue lokal hingga koneksi pulih."})
     try:
-        request_id, ack = await _await_ack({"type": "send", "to": params.peer_id,
-            "content": params.message, "msg_type": params.msg_type})
+        request_id, ack = await _await_ack(payload)
         if ack is None:
-            return json.dumps({"success": True, "request_id": request_id,
-                "note": "Terkirim (ACK timeout)"})
-        return json.dumps({"success": ack.get("delivered", False),
+            queued = _enqueue_retry_action("send", payload, reason="ACK timeout")
+            return json.dumps({"success": False, "request_id": request_id,
+                "queued_for_retry": True,
+                "retry_queue_id": queued["retry_id"],
+                "retry_queue_count": len(_retry_queue()),
+                "note": "ACK timeout. Pesan disimpan di retry queue lokal."})
+        if ack.get("delivered", False):
+            return json.dumps({"success": True,
+                "accepted": ack.get("accepted", False),
+                "delivered": ack.get("delivered", False),
+                "recipient_count": ack.get("recipient_count", 0),
+                "to": params.peer_id,
+                "request_id": request_id,
+                "message_id": ack.get("message_id"),
+                "sequence": ack.get("sequence")})
+        queued = _enqueue_retry_action("send", payload, reason="Target belum menerima pesan")
+        return json.dumps({"success": False,
             "accepted": ack.get("accepted", False),
             "delivered": ack.get("delivered", False),
             "recipient_count": ack.get("recipient_count", 0),
             "to": params.peer_id,
             "request_id": request_id,
             "message_id": ack.get("message_id"),
-            "sequence": ack.get("sequence")})
+            "sequence": ack.get("sequence"),
+            "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue())})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        queued = _enqueue_retry_action("send", payload, reason=str(e))
+        return json.dumps({"success": False, "error": str(e),
+            "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue())})
 
 
 @mcp.tool(name="agent_broadcast")
@@ -730,24 +993,52 @@ async def agent_broadcast(params: BroadcastInput) -> str:
     Returns:
         str: JSON status broadcast
     """
-    if ws_conn is None:
+    payload = {"type": "broadcast",
+        "content": params.message, "msg_type": params.msg_type}
+    if current_room is None:
         return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
+    if ws_conn is None:
+        queued = _enqueue_retry_action("broadcast", payload, reason="WebSocket tidak terhubung")
+        return json.dumps({"success": False, "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue()),
+            "message": "Broadcast disimpan di retry queue lokal hingga koneksi pulih."})
     try:
-        request_id, ack = await _await_ack({"type": "broadcast",
-            "content": params.message, "msg_type": params.msg_type})
+        request_id, ack = await _await_ack(payload)
         if ack is None:
-            return json.dumps({"success": True, "request_id": request_id,
-                "message": "Broadcast diterima relay (ACK timeout)."})
-        return json.dumps({"success": ack.get("accepted", False),
+            queued = _enqueue_retry_action("broadcast", payload, reason="ACK timeout")
+            return json.dumps({"success": False, "request_id": request_id,
+                "queued_for_retry": True,
+                "retry_queue_id": queued["retry_id"],
+                "retry_queue_count": len(_retry_queue()),
+                "message": "ACK timeout. Broadcast disimpan di retry queue lokal."})
+        if ack.get("delivered", False):
+            return json.dumps({"success": ack.get("accepted", False),
+                "accepted": ack.get("accepted", False),
+                "delivered": ack.get("delivered", False),
+                "recipient_count": ack.get("recipient_count", 0),
+                "request_id": request_id,
+                "message_id": ack.get("message_id"),
+                "sequence": ack.get("sequence"),
+                "message": "Broadcast diterima relay."})
+        queued = _enqueue_retry_action("broadcast", payload, reason="Belum ada penerima aktif")
+        return json.dumps({"success": False,
             "accepted": ack.get("accepted", False),
             "delivered": ack.get("delivered", False),
             "recipient_count": ack.get("recipient_count", 0),
             "request_id": request_id,
             "message_id": ack.get("message_id"),
             "sequence": ack.get("sequence"),
-            "message": "Broadcast diterima relay."})
+            "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue()),
+            "message": "Broadcast disimpan di retry queue lokal sampai ada penerima aktif."})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        queued = _enqueue_retry_action("broadcast", payload, reason=str(e))
+        return json.dumps({"success": False, "error": str(e),
+            "queued_for_retry": True,
+            "retry_queue_id": queued["retry_id"],
+            "retry_queue_count": len(_retry_queue())})
 
 
 @mcp.tool(name="agent_read_inbox")
@@ -805,6 +1096,7 @@ async def agent_list() -> str:
     return json.dumps({"my_agent_id": agent_id, "my_name": agent_name,
         "client_session_id": client_session_id,
         "current_room": current_room, "connected": ws_conn is not None,
+        "local_retry_queue_count": len(_retry_queue()) if current_room else 0,
         "server": AGENTLINK_URL}, indent=2)
 
 
