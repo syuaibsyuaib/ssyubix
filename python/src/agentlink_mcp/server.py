@@ -11,9 +11,10 @@ import os
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional, Any
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 import websockets
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 AGENTLINK_URL = os.environ.get("AGENTLINK_URL", "https://agentlink.syuaibsyuaib.workers.dev").rstrip("/")
 AGENT_NAME    = os.environ.get("AGENT_NAME", f"agent-{uuid.uuid4().hex[:6]}")
 WS_BASE       = AGENTLINK_URL.replace("https://", "wss://").replace("http://", "ws://")
+LOCAL_STATE_VERSION = 1
+LOCAL_INBOX_LIMIT = max(10, int(os.environ.get("SSYUBIX_LOCAL_INBOX_LIMIT", "200")))
 
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
@@ -41,8 +44,163 @@ room_credentials: Optional[dict] = None
 reconnect_task: Optional[asyncio.Task] = None
 auto_reconnect_enabled: bool = False
 
+
+def _resolve_local_state_dir() -> Path:
+    override = os.environ.get("SSYUBIX_LOCAL_STATE_DIR")
+    if override:
+        return Path(override).expanduser()
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "ssyubix"
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home:
+        return Path(xdg_state_home) / "ssyubix"
+    return Path.home() / ".ssyubix"
+
+
+local_state_dir: Path = _resolve_local_state_dir()
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _server_cache_key() -> str:
+    parsed = urlparse(AGENTLINK_URL)
+    host = parsed.netloc or parsed.path or "default"
+    return "".join(ch if ch.isalnum() else "_" for ch in host)
+
+
+def _room_cache_path(room_id: str) -> Path:
+    return local_state_dir / "rooms" / _server_cache_key() / f"{room_id.upper()}.json"
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _max_message_sequence(messages: list[dict]) -> int:
+    sequences = [
+        _safe_int(message.get("sequence"))
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("sequence"), int)
+    ]
+    return max(sequences, default=0)
+
+
+def _write_json_file(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _load_local_room_state(room_id: str) -> dict:
+    cache_path = _room_cache_path(room_id)
+    if not cache_path.exists():
+        return {
+            "room_id": room_id.upper(),
+            "messages": [],
+            "last_read_sequence": 0,
+            "last_sequence": 0,
+            "restored": False,
+        }
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {
+            "room_id": room_id.upper(),
+            "messages": [],
+            "last_read_sequence": 0,
+            "last_sequence": 0,
+            "restored": False,
+        }
+
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    messages = [message for message in messages if isinstance(message, dict)][-LOCAL_INBOX_LIMIT:]
+    return {
+        "room_id": payload.get("room_id", room_id.upper()),
+        "messages": messages,
+        "last_read_sequence": _safe_int(payload.get("last_read_sequence")),
+        "last_sequence": _safe_int(payload.get("last_sequence")),
+        "cached_at": payload.get("cached_at"),
+        "restored": True,
+    }
+
+
+def _persist_local_room_state():
+    if current_room is None:
+        return
+    room_id = current_room.get("room_id")
+    if not isinstance(room_id, str) or not room_id:
+        return
+    messages = [
+        message
+        for message in inbox[-LOCAL_INBOX_LIMIT:]
+        if isinstance(message, dict) and message.get("room_id", room_id) == room_id
+    ]
+    payload = {
+        "version": LOCAL_STATE_VERSION,
+        "server": AGENTLINK_URL,
+        "room_id": room_id,
+        "cached_at": _now_iso(),
+        "last_sequence": _safe_int(current_room.get("last_sequence")),
+        "last_read_sequence": _safe_int(current_room.get("last_read_sequence")),
+        "messages": messages,
+    }
+    try:
+        _write_json_file(_room_cache_path(room_id), payload)
+    except OSError as exc:
+        logger.warning("Local cache write failed: %s", exc)
+
+
+def _restore_local_room_state(room_id: str):
+    cached = _load_local_room_state(room_id)
+    merged_messages = []
+    seen_keys = set()
+    live_messages = [
+        message
+        for message in inbox
+        if isinstance(message, dict) and message.get("room_id", room_id) == room_id
+    ]
+    for message in [*cached["messages"], *live_messages]:
+        key = (
+            message.get("message_id"),
+            message.get("sequence"),
+            message.get("event"),
+            message.get("agent_id"),
+            message.get("timestamp"),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged_messages.append(message)
+    inbox[:] = merged_messages[-LOCAL_INBOX_LIMIT:]
+    if current_room is None:
+        return
+    current_room["last_read_sequence"] = cached["last_read_sequence"]
+    current_room["local_cache_path"] = str(_room_cache_path(room_id))
+    current_room["local_cached_message_count"] = len(inbox)
+    current_room["local_cached_last_sequence"] = cached["last_sequence"]
+    current_room["local_cache_restored"] = cached["restored"]
+    current_room["local_cache_restored_at"] = cached.get("cached_at")
+    _persist_local_room_state()
+
+
+def _append_inbox_entry(entry: dict):
+    room_id = entry.get("room_id")
+    if room_id is None and current_room is not None:
+        room_id = current_room.get("room_id")
+        if room_id is not None:
+            entry = {**entry, "room_id": room_id}
+    inbox.append(entry)
+    if len(inbox) > LOCAL_INBOX_LIMIT:
+        del inbox[:-LOCAL_INBOX_LIMIT]
+    _persist_local_room_state()
 
 def _update_room_sequence(msg: dict):
     if current_room is None:
@@ -150,12 +308,18 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
         "reconnecting": False,
         "reconnect_attempts": 0,
         "last_reconnect_error": None,
+        "last_read_sequence": 0,
+        "local_cache_path": str(_room_cache_path(rid)),
+        "local_cached_message_count": 0,
+        "local_cached_last_sequence": 0,
+        "local_cache_restored": False,
+        "local_cache_restored_at": None,
         "peers": peers,
     }
     room_credentials = {"room_id": rid, "token": token}
     ws_conn = conn
     if reconnecting:
-        inbox.append({
+        _append_inbox_entry({
             "type": "event",
             "event": "client_reconnected",
             "agent_id": agent_id,
@@ -273,15 +437,16 @@ def _handle_incoming(msg: dict):
                     peers[peer_agent_id] = peer
             current_room["peers"] = peers
         for peer in msg.get("agents", []):
-            inbox.append({"type": "event", "event": "agent_online",
+            _append_inbox_entry({"type": "event", "event": "agent_online",
                 "from": peer.get("name"), "agent_id": peer.get("agent_id"),
                 "presence": peer.get("presence", "online"),
                 "joined_at": peer.get("joined_at"),
                 "last_seen_at": peer.get("last_seen_at"),
                 "timestamp": _now_iso()})
+        _persist_local_room_state()
     elif t == "message":
         _update_room_sequence(msg)
-        inbox.append({"type": "message", "from": msg.get("from_name", "unknown"),
+        _append_inbox_entry({"type": "message", "from": msg.get("from_name", "unknown"),
             "agent_id": msg.get("from"), "content": msg.get("content", ""),
             "msg_type": msg.get("msg_type", "text"), "broadcast": msg.get("broadcast", False),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
@@ -297,7 +462,7 @@ def _handle_incoming(msg: dict):
                 last_seen_at=msg.get("last_seen_at"))
         elif event_name == "agent_left":
             _remove_peer_state(event_agent_id)
-        inbox.append({"type": "event", "event": msg.get("event"),
+        _append_inbox_entry({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
             "room_id": msg.get("room_id"),
@@ -384,6 +549,8 @@ class BroadcastInput(BaseModel):
 class ReadInboxInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     limit: int  = Field(default=10, ge=1, le=100, description="Jumlah pesan")
+    only_unread: bool = Field(default=False, description="True = hanya tampilkan pesan di atas cursor baca lokal")
+    mark_read: bool = Field(default=True, description="True = simpan cursor baca lokal dari hasil yang dibaca")
     clear: bool = Field(default=False, description="Hapus setelah dibaca")
 
 
@@ -452,6 +619,7 @@ async def room_join(params: JoinRoomInput) -> str:
 
     try:
         welcome = await _connect_room(rid, params.token, reconnecting=False)
+        _restore_local_room_state(rid)
         auto_reconnect_enabled = True
         existing = welcome.get("agents", [])
 
@@ -460,6 +628,8 @@ async def room_join(params: JoinRoomInput) -> str:
             "session_resumed": current_room.get("session_resumed", False) if current_room else False,
             "heartbeat_interval_seconds": current_room.get("heartbeat_interval_seconds") if current_room else None,
             "heartbeat_timeout_seconds": current_room.get("heartbeat_timeout_seconds") if current_room else None,
+            "last_read_sequence": current_room.get("last_read_sequence") if current_room else 0,
+            "local_cached_message_count": current_room.get("local_cached_message_count") if current_room else 0,
             "message": welcome.get("message", f"Berhasil join room '{rid}'.")}, indent=2)
 
     except asyncio.TimeoutError:
@@ -590,10 +760,38 @@ async def agent_read_inbox(params: ReadInboxInput) -> str:
     Returns:
         str: JSON daftar pesan dan event
     """
-    messages = inbox[-params.limit:]
-    if params.clear: inbox.clear()
+    room_last_read = _safe_int(current_room.get("last_read_sequence")) if current_room else 0
+    visible_messages = inbox
+    if params.only_unread:
+        visible_messages = [
+            message
+            for message in inbox
+            if not isinstance(message, dict)
+            or not isinstance(message.get("sequence"), int)
+            or message.get("sequence", 0) > room_last_read
+        ]
+    messages = visible_messages[-params.limit:]
+    max_sequence = _max_message_sequence(messages)
+    if params.mark_read and current_room is not None and max_sequence > room_last_read:
+        current_room["last_read_sequence"] = max_sequence
+        room_last_read = max_sequence
+    if params.clear:
+        inbox.clear()
+    if current_room is not None:
+        current_room["local_cached_message_count"] = len(inbox)
+    _persist_local_room_state()
+    unread_count = len([
+        message for message in inbox
+        if isinstance(message, dict)
+        and isinstance(message.get("sequence"), int)
+        and message.get("sequence", 0) > room_last_read
+    ])
     return json.dumps({"messages": messages, "count": len(messages),
-        "total_in_inbox": len(inbox), "cleared": params.clear}, indent=2)
+        "total_in_inbox": len(inbox), "cleared": params.clear,
+        "only_unread": params.only_unread, "mark_read": params.mark_read,
+        "last_read_sequence": room_last_read,
+        "unread_count": unread_count,
+        "cache_path": current_room.get("local_cache_path") if current_room else None}, indent=2)
 
 
 @mcp.tool(name="agent_list")
