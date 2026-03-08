@@ -14,6 +14,11 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Added local room summary snapshots plus the `room_local_summary` tool for offline room inspection
 - Added architecture documentation for the local-first transient state and WebSocket hibernation strategy
 
+### Fixed
+
+- Reduced Durable Object presence writes by checkpointing session state on coarse boundaries instead of every heartbeat
+- Rehydrated active room sessions from WebSocket attachments so reconnect and peer snapshots stay correct after hibernation
+
 ## [2.0.3] - 2026-03-08
 
 ### Added

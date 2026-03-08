@@ -14,6 +14,9 @@ import { DurableObject } from "cloudflare:workers";
 import { createAck, createRoomEvent, createRoomMessage } from "./message-protocol";
 import {
   buildHeartbeatConfig,
+  shouldCheckpointPresence,
+  shouldHydrateActiveSessions,
+  toHydratedPresenceState,
   shouldResumeSession,
   toPresenceSnapshot,
   type AgentPresenceSnapshot,
@@ -174,6 +177,7 @@ export default {
 
 export class AgentLinkRoom extends DurableObject {
   private sequenceCounter: number | null = null;
+  private lastHydratedAt: string | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const upgradeHeader = request.headers.get("Upgrade");
@@ -185,6 +189,7 @@ export class AgentLinkRoom extends DurableObject {
     const roomId    = request.headers.get("X-Room-Id") || "unknown";
     const sessionId = new URL(request.url).searchParams.get("session_id") || generateId(16);
     const now = new Date().toISOString();
+    await this.ensureActiveSessionsHydrated(now);
     const session = await this.resolveSession({
       sessionId,
       agentName,
@@ -196,7 +201,7 @@ export class AgentLinkRoom extends DurableObject {
 
     // Pakai Hibernation API
     this.ctx.acceptWebSocket(server, [session.agentId, agentName, roomId, sessionId]);
-    const state: AgentSessionState = {
+    let state: AgentSessionState = {
       session_id: sessionId,
       agent_id: session.agentId,
       name: agentName,
@@ -206,7 +211,11 @@ export class AgentLinkRoom extends DurableObject {
       presence: "online",
     };
     this.writeAgentState(server, state);
-    await this.storeSessionState(state);
+    state = await this.maybeCheckpointSessionState(server, {
+      previousState: state,
+      nextState: state,
+      force: true,
+    });
     this.closeDuplicateSessions(server, sessionId);
 
     const joinSequence = await this.nextSequence();
@@ -231,6 +240,7 @@ export class AgentLinkRoom extends DurableObject {
       heartbeat_interval_seconds: heartbeat.heartbeat_interval_seconds,
       heartbeat_timeout_seconds: heartbeat.heartbeat_timeout_seconds,
       reconnect_window_seconds: heartbeat.reconnect_window_seconds,
+      presence_checkpoint_interval_seconds: heartbeat.presence_checkpoint_interval_seconds,
       agents: existingAgents,
       message: session.reconnected
         ? `Berhasil terhubung kembali ke room '${roomId}'.`
@@ -264,6 +274,7 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
+    await this.ensureActiveSessionsHydrated(new Date().toISOString());
     const agentState = await this.touchAgentState(ws);
     const agentId = agentState.agent_id;
     const name = agentState.name;
@@ -281,6 +292,7 @@ export class AgentLinkRoom extends DurableObject {
         last_seen_at: agentState.last_seen_at,
         heartbeat_interval_seconds: heartbeat.heartbeat_interval_seconds,
         heartbeat_timeout_seconds: heartbeat.heartbeat_timeout_seconds,
+        presence_checkpoint_interval_seconds: heartbeat.presence_checkpoint_interval_seconds,
         echo_sent_at: typeof msg.sent_at === "string" ? msg.sent_at : undefined,
       }));
       return;
@@ -379,7 +391,11 @@ export class AgentLinkRoom extends DurableObject {
       last_seen_at: timestamp,
       presence: "offline",
     };
-    await this.storeSessionState(offlineState);
+    await this.maybeCheckpointSessionState(ws, {
+      previousState: state,
+      nextState: offlineState,
+      force: true,
+    });
     const sequence = await this.nextSequence();
 
     // Broadcast ke semua: ada yang leave
@@ -431,6 +447,7 @@ export class AgentLinkRoom extends DurableObject {
       joined_at: timestamp,
       last_seen_at: timestamp,
       presence: "online",
+      checkpointed_at: undefined,
     };
   }
 
@@ -440,14 +457,13 @@ export class AgentLinkRoom extends DurableObject {
   }
 
   private async touchAgentState(ws: WebSocket): Promise<AgentSessionState> {
-    const nextState: AgentSessionState = {
-      ...this.readAgentState(ws),
-      last_seen_at: new Date().toISOString(),
-      presence: "online",
-    };
+    const previousState = this.readAgentState(ws);
+    const nextState = toHydratedPresenceState(previousState, new Date().toISOString());
     this.writeAgentState(ws, nextState);
-    await this.storeSessionState(nextState);
-    return nextState;
+    return this.maybeCheckpointSessionState(ws, {
+      previousState,
+      nextState,
+    });
   }
 
   private listActiveAgents(options: {
@@ -469,15 +485,7 @@ export class AgentLinkRoom extends DurableObject {
   }
 
   private hasActiveSession(sessionId: string, excludedWs: WebSocket): boolean {
-    for (const ws of this.ctx.getWebSockets()) {
-      if (ws === excludedWs) {
-        continue;
-      }
-      if (this.readAgentState(ws).session_id === sessionId) {
-        return true;
-      }
-    }
-    return false;
+    return this.findActiveSession(sessionId, excludedWs) !== null;
   }
 
   private closeDuplicateSessions(currentWs: WebSocket, sessionId: string): void {
@@ -509,8 +517,75 @@ export class AgentLinkRoom extends DurableObject {
       joined_at: state.joined_at,
       last_seen_at: state.last_seen_at,
       presence: state.presence,
+      checkpointed_at: state.checkpointed_at,
     };
     await this.ctx.storage.put(`session:${state.session_id}`, stored);
+  }
+
+  private async maybeCheckpointSessionState(ws: WebSocket, params: {
+    previousState: AgentSessionState;
+    nextState: AgentSessionState;
+    force?: boolean;
+  }): Promise<AgentSessionState> {
+    if (!shouldCheckpointPresence({
+      lastCheckpointAt: params.nextState.checkpointed_at,
+      nextLastSeenAt: params.nextState.last_seen_at,
+      nextPresence: params.nextState.presence,
+      previousPresence: params.previousState.presence,
+      force: params.force,
+    })) {
+      return params.nextState;
+    }
+
+    const persistedState: AgentSessionState = {
+      ...params.nextState,
+      checkpointed_at: params.nextState.last_seen_at,
+    };
+    this.writeAgentState(ws, persistedState);
+    await this.storeSessionState(persistedState);
+    return persistedState;
+  }
+
+  private async ensureActiveSessionsHydrated(now: string): Promise<void> {
+    if (!shouldHydrateActiveSessions({
+      lastHydratedAt: this.lastHydratedAt,
+      now,
+    })) {
+      return;
+    }
+
+    for (const ws of this.ctx.getWebSockets()) {
+      const previousState = this.readAgentState(ws);
+      const nextState = toHydratedPresenceState(previousState, now);
+      this.writeAgentState(ws, nextState);
+      await this.maybeCheckpointSessionState(ws, {
+        previousState,
+        nextState,
+      });
+    }
+
+    this.lastHydratedAt = now;
+  }
+
+  private findActiveSession(
+    sessionId: string,
+    excludedWs?: WebSocket,
+  ): AgentSessionState | null {
+    if (!sessionId) {
+      return null;
+    }
+
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === excludedWs) {
+        continue;
+      }
+      const state = this.readAgentState(ws);
+      if (state.session_id === sessionId) {
+        return state;
+      }
+    }
+
+    return null;
   }
 
   private async resolveSession(params: {
@@ -518,6 +593,15 @@ export class AgentLinkRoom extends DurableObject {
     agentName: string;
     now: string;
   }): Promise<{ agentId: string; joinedAt: string; reconnected: boolean }> {
+    const active = this.findActiveSession(params.sessionId);
+    if (active) {
+      return {
+        agentId: active.agent_id,
+        joinedAt: active.joined_at,
+        reconnected: true,
+      };
+    }
+
     const stored = await this.ctx.storage.get<StoredRoomSession>(
       `session:${params.sessionId}`,
     );
