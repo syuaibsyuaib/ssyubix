@@ -9,9 +9,11 @@ import json
 import uuid
 import os
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import aiohttp
 import websockets
@@ -29,11 +31,18 @@ WS_BASE       = AGENTLINK_URL.replace("https://", "wss://").replace("http://", "
 
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
+client_session_id: str       = os.environ.get("AGENT_SESSION_ID", uuid.uuid4().hex)
 current_room: Optional[dict] = None
 ws_conn: Optional[Any]       = None
 inbox: list                  = []
 http_session: Optional[aiohttp.ClientSession] = None
 pending_acks: dict[str, asyncio.Future] = {}
+room_credentials: Optional[dict] = None
+reconnect_task: Optional[asyncio.Task] = None
+auto_reconnect_enabled: bool = False
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 def _update_room_sequence(msg: dict):
     if current_room is None:
@@ -43,6 +52,126 @@ def _update_room_sequence(msg: dict):
         last_sequence = current_room.get("last_sequence", 0)
         if sequence > last_sequence:
             current_room["last_sequence"] = sequence
+
+def _room_peers() -> dict:
+    if current_room is None:
+        return {}
+    peers = current_room.setdefault("peers", {})
+    if isinstance(peers, dict):
+        return peers
+    current_room["peers"] = {}
+    return current_room["peers"]
+
+def _set_peer_state(agent_id_value: Optional[str], *, name: Optional[str], presence: str,
+    joined_at: Optional[str], last_seen_at: Optional[str]):
+    if not agent_id_value:
+        return
+    peers = _room_peers()
+    existing = peers.get(agent_id_value, {})
+    peers[agent_id_value] = {
+        "agent_id": agent_id_value,
+        "name": name or existing.get("name"),
+        "presence": presence,
+        "joined_at": joined_at or existing.get("joined_at"),
+        "last_seen_at": last_seen_at or existing.get("last_seen_at") or _now_iso(),
+    }
+
+def _remove_peer_state(agent_id_value: Optional[str]):
+    if not agent_id_value or current_room is None:
+        return
+    _room_peers().pop(agent_id_value, None)
+
+def _update_pong(msg: dict):
+    if current_room is None:
+        return
+    current_room["last_pong_at"] = msg.get("timestamp", _now_iso())
+    current_room["last_pong_monotonic"] = time.monotonic()
+    if "last_seen_at" in msg:
+        current_room["last_seen_at"] = msg.get("last_seen_at")
+    if "heartbeat_interval_seconds" in msg:
+        current_room["heartbeat_interval_seconds"] = msg.get("heartbeat_interval_seconds")
+    if "heartbeat_timeout_seconds" in msg:
+        current_room["heartbeat_timeout_seconds"] = msg.get("heartbeat_timeout_seconds")
+    sent_at = msg.get("echo_sent_at")
+    if isinstance(sent_at, str):
+        try:
+            latency_ms = int((datetime.now(timezone.utc) - datetime.fromisoformat(sent_at)).total_seconds() * 1000)
+            current_room["last_heartbeat_latency_ms"] = latency_ms
+        except ValueError:
+            pass
+
+def _cancel_reconnect_task():
+    global reconnect_task
+    if reconnect_task is not None and not reconnect_task.done():
+        reconnect_task.cancel()
+    reconnect_task = None
+
+async def _open_room_connection(rid: str, token: Optional[str]) -> tuple[Any, dict]:
+    query = {"name": agent_name, "session_id": client_session_id}
+    if token:
+        query["token"] = token
+    qs = urlencode(query)
+    conn = await asyncio.wait_for(websockets.connect(
+        f"{WS_BASE}/connect/{rid}?{qs}",
+        ping_interval=20,
+        ping_timeout=20,
+        close_timeout=5,
+    ), timeout=15)
+    welcome = json.loads(await asyncio.wait_for(conn.recv(), timeout=10))
+    if welcome.get("type") != "welcome":
+        try:
+            await conn.close()
+        except Exception:
+            pass
+        raise RuntimeError(f"Unexpected response: {welcome}")
+    return conn, welcome
+
+async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = False) -> dict:
+    global ws_conn, current_room, agent_id, room_credentials
+    conn, welcome = await _open_room_connection(rid, token)
+    agent_id = welcome.get("agent_id", agent_id)
+    peers = {}
+    for peer in welcome.get("agents", []):
+        peer_agent_id = peer.get("agent_id")
+        if peer_agent_id:
+            peers[peer_agent_id] = peer
+    current_room = {
+        "room_id": rid,
+        "last_sequence": welcome.get("last_sequence", 0),
+        "joined_at": welcome.get("joined_at"),
+        "last_seen_at": welcome.get("last_seen_at"),
+        "presence": welcome.get("presence", "online"),
+        "session_resumed": welcome.get("session_resumed", False),
+        "heartbeat_interval_seconds": welcome.get("heartbeat_interval_seconds", 30),
+        "heartbeat_timeout_seconds": welcome.get("heartbeat_timeout_seconds", 90),
+        "reconnect_window_seconds": welcome.get("reconnect_window_seconds", 120),
+        "last_pong_at": _now_iso(),
+        "last_pong_monotonic": time.monotonic(),
+        "reconnecting": False,
+        "reconnect_attempts": 0,
+        "last_reconnect_error": None,
+        "peers": peers,
+    }
+    room_credentials = {"room_id": rid, "token": token}
+    ws_conn = conn
+    if reconnecting:
+        inbox.append({
+            "type": "event",
+            "event": "client_reconnected",
+            "agent_id": agent_id,
+            "room_id": rid,
+            "session_resumed": current_room.get("session_resumed", False),
+            "timestamp": _now_iso(),
+        })
+    return welcome
+
+def _schedule_reconnect():
+    global reconnect_task
+    if not auto_reconnect_enabled or room_credentials is None or current_room is None:
+        return
+    if reconnect_task is not None and not reconnect_task.done():
+        return
+    reconnect_task = asyncio.create_task(_reconnect_loop())
 
 def _fail_pending_acks(reason: str):
     error = RuntimeError(reason)
@@ -67,25 +196,56 @@ async def _await_ack(payload: dict, timeout: float = 5.0) -> tuple[str, Optional
         if request_id in pending_acks and pending_acks[request_id].done():
             pending_acks.pop(request_id, None)
 
+async def _reconnect_loop():
+    global reconnect_task
+    attempt = 0
+    try:
+        while auto_reconnect_enabled and room_credentials is not None and current_room is not None and ws_conn is None:
+            attempt += 1
+            current_room["reconnecting"] = True
+            current_room["reconnect_attempts"] = attempt
+            try:
+                await _connect_room(
+                    room_credentials["room_id"],
+                    room_credentials.get("token"),
+                    reconnecting=True,
+                )
+                if current_room is not None:
+                    current_room["reconnect_attempts"] = attempt
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if current_room is not None:
+                    current_room["last_reconnect_error"] = str(e)
+                await asyncio.sleep(min(30, 2 ** min(attempt, 4)))
+    finally:
+        reconnect_task = None
+
 async def ws_listen():
     global ws_conn, agent_id
     while True:
         if ws_conn is None:
             await asyncio.sleep(1)
             continue
+        conn = ws_conn
         try:
-            async for raw in ws_conn:
+            async for raw in conn:
                 try:
                     _handle_incoming(json.loads(raw))
                 except Exception as e:
                     logger.warning(f"Parse error: {e}")
         except ConnectionClosed:
             _fail_pending_acks("WebSocket connection closed.")
-            ws_conn = None
         except Exception as e:
             logger.warning(f"WS error: {e}")
             _fail_pending_acks(f"WebSocket error: {e}")
-            ws_conn = None
+        finally:
+            if ws_conn is conn:
+                ws_conn = None
+                if current_room is not None:
+                    current_room["reconnecting"] = auto_reconnect_enabled
+                _schedule_reconnect()
         await asyncio.sleep(2)
 
 def _handle_incoming(msg: dict):
@@ -95,10 +255,30 @@ def _handle_incoming(msg: dict):
         agent_id = msg.get("agent_id", agent_id)
         if current_room is not None:
             current_room["last_sequence"] = msg.get("last_sequence", current_room.get("last_sequence", 0))
+            current_room["joined_at"] = msg.get("joined_at", current_room.get("joined_at"))
+            current_room["last_seen_at"] = msg.get("last_seen_at", current_room.get("last_seen_at"))
+            current_room["presence"] = msg.get("presence", current_room.get("presence", "online"))
+            current_room["session_resumed"] = msg.get("session_resumed", current_room.get("session_resumed", False))
+            current_room["heartbeat_interval_seconds"] = msg.get("heartbeat_interval_seconds", current_room.get("heartbeat_interval_seconds", 30))
+            current_room["heartbeat_timeout_seconds"] = msg.get("heartbeat_timeout_seconds", current_room.get("heartbeat_timeout_seconds", 90))
+            current_room["reconnect_window_seconds"] = msg.get("reconnect_window_seconds", current_room.get("reconnect_window_seconds", 120))
+            current_room["last_pong_at"] = _now_iso()
+            current_room["last_pong_monotonic"] = time.monotonic()
+            current_room["reconnecting"] = False
+            current_room["last_reconnect_error"] = None
+            peers = {}
+            for peer in msg.get("agents", []):
+                peer_agent_id = peer.get("agent_id")
+                if peer_agent_id:
+                    peers[peer_agent_id] = peer
+            current_room["peers"] = peers
         for peer in msg.get("agents", []):
             inbox.append({"type": "event", "event": "agent_online",
                 "from": peer.get("name"), "agent_id": peer.get("agent_id"),
-                "timestamp": datetime.now(timezone.utc).isoformat()})
+                "presence": peer.get("presence", "online"),
+                "joined_at": peer.get("joined_at"),
+                "last_seen_at": peer.get("last_seen_at"),
+                "timestamp": _now_iso()})
     elif t == "message":
         _update_room_sequence(msg)
         inbox.append({"type": "message", "from": msg.get("from_name", "unknown"),
@@ -106,14 +286,28 @@ def _handle_incoming(msg: dict):
             "msg_type": msg.get("msg_type", "text"), "broadcast": msg.get("broadcast", False),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
             "room_id": msg.get("room_id"),
-            "timestamp": msg.get("timestamp", datetime.now(timezone.utc).isoformat())})
+            "timestamp": msg.get("timestamp", _now_iso())})
     elif t == "event":
         _update_room_sequence(msg)
+        event_name = msg.get("event")
+        event_agent_id = msg.get("agent_id")
+        if event_name in {"agent_joined", "agent_reconnected"}:
+            _set_peer_state(event_agent_id, name=msg.get("name"),
+                presence=msg.get("presence", "online"), joined_at=msg.get("joined_at"),
+                last_seen_at=msg.get("last_seen_at"))
+        elif event_name == "agent_left":
+            _remove_peer_state(event_agent_id)
         inbox.append({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
             "room_id": msg.get("room_id"),
-            "timestamp": msg.get("timestamp", datetime.now(timezone.utc).isoformat())})
+            "presence": msg.get("presence"),
+            "joined_at": msg.get("joined_at"),
+            "last_seen_at": msg.get("last_seen_at"),
+            "session_resumed": msg.get("session_resumed"),
+            "timestamp": msg.get("timestamp", _now_iso())})
+    elif t == "pong":
+        _update_pong(msg)
     elif t == "ack":
         request_id = msg.get("request_id")
         if isinstance(request_id, str):
@@ -121,23 +315,40 @@ def _handle_incoming(msg: dict):
             if future is not None and not future.done():
                 future.set_result(msg)
 
-async def ping_loop():
+async def heartbeat_loop():
+    global ws_conn
     while True:
-        await asyncio.sleep(20)
-        if ws_conn is not None:
+        await asyncio.sleep(5)
+        if ws_conn is not None and current_room is not None:
+            interval = current_room.get("heartbeat_interval_seconds", 30)
+            timeout = current_room.get("heartbeat_timeout_seconds", 90)
+            now_monotonic = time.monotonic()
             try:
-                await ws_conn.send(json.dumps({"type": "ping"}))
+                last_sent = current_room.get("last_heartbeat_sent_monotonic", 0.0)
+                if now_monotonic - float(last_sent) >= float(interval):
+                    sent_at = _now_iso()
+                    await ws_conn.send(json.dumps({"type": "ping", "sent_at": sent_at}))
+                    current_room["last_heartbeat_sent_at"] = sent_at
+                    current_room["last_heartbeat_sent_monotonic"] = now_monotonic
             except Exception:
                 pass
+            last_pong = current_room.get("last_pong_monotonic")
+            if isinstance(last_pong, (int, float)) and now_monotonic - float(last_pong) > float(timeout):
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    ws_conn = None
+                    _schedule_reconnect()
 
 @asynccontextmanager
 async def lifespan(server):
     global http_session
     http_session = aiohttp.ClientSession()
     t1 = asyncio.create_task(ws_listen())
-    t2 = asyncio.create_task(ping_loop())
+    t2 = asyncio.create_task(heartbeat_loop())
     yield {}
     t1.cancel(); t2.cancel()
+    _cancel_reconnect_task()
     if ws_conn:
         try: await ws_conn.close()
         except Exception: pass
@@ -227,32 +438,28 @@ async def room_join(params: JoinRoomInput) -> str:
     Returns:
         str: JSON info room + daftar agent yang sudah ada
     """
-    global ws_conn, current_room, agent_id
+    global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     rid = params.room_id.upper()
-    qs  = f"name={agent_name}"
-    if params.token:
-        qs += f"&token={params.token}"
+    auto_reconnect_enabled = False
+    _cancel_reconnect_task()
 
     if ws_conn:
         try: await ws_conn.close()
         except Exception: pass
         ws_conn = None
         _fail_pending_acks("WebSocket connection replaced by room_join.")
+    room_credentials = None
 
     try:
-        conn = await asyncio.wait_for(websockets.connect(f"{WS_BASE}/connect/{rid}?{qs}"), timeout=15)
-        welcome = json.loads(await asyncio.wait_for(conn.recv(), timeout=10))
-
-        if welcome.get("type") != "welcome":
-            return json.dumps({"success": False, "error": f"Unexpected response: {welcome}"})
-
-        agent_id     = welcome.get("agent_id", agent_id)
-        current_room = {"room_id": rid, "last_sequence": welcome.get("last_sequence", 0)}
-        ws_conn = conn
-        existing     = welcome.get("agents", [])
+        welcome = await _connect_room(rid, params.token, reconnecting=False)
+        auto_reconnect_enabled = True
+        existing = welcome.get("agents", [])
 
         return json.dumps({"success": True, "room_id": rid, "my_agent_id": agent_id,
             "agents": existing, "agent_count": len(existing) + 1,
+            "session_resumed": current_room.get("session_resumed", False) if current_room else False,
+            "heartbeat_interval_seconds": current_room.get("heartbeat_interval_seconds") if current_room else None,
+            "heartbeat_timeout_seconds": current_room.get("heartbeat_timeout_seconds") if current_room else None,
             "message": welcome.get("message", f"Berhasil join room '{rid}'.")}, indent=2)
 
     except asyncio.TimeoutError:
@@ -269,9 +476,12 @@ async def room_leave() -> str:
     Returns:
         str: JSON status keluar
     """
-    global ws_conn, current_room, agent_id
+    global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     if not current_room:
         return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
+    auto_reconnect_enabled = False
+    _cancel_reconnect_task()
+    room_credentials = None
     try:
         if ws_conn: await ws_conn.close()
     except Exception: pass
@@ -395,6 +605,7 @@ async def agent_list() -> str:
         str: JSON info agent
     """
     return json.dumps({"my_agent_id": agent_id, "my_name": agent_name,
+        "client_session_id": client_session_id,
         "current_room": current_room, "connected": ws_conn is not None,
         "server": AGENTLINK_URL}, indent=2)
 

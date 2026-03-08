@@ -6,6 +6,18 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-03-08
+
+### Added
+
+- Added room presence snapshots with heartbeat and reconnect metadata in Worker welcome and room events
+- Added session-based reconnect support so clients can resume the same `agent_id` inside the reconnect window
+
+### Fixed
+
+- Added heartbeat monitoring and automatic room reconnect logic in the Python MCP client
+- Preserved peer presence snapshots locally across join, leave, pong, and reconnect flows
+
 ## [2.0.2] - 2026-03-08
 
 ### Added

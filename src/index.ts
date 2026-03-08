@@ -12,6 +12,13 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { createAck, createRoomEvent, createRoomMessage } from "./message-protocol";
+import {
+  buildHeartbeatConfig,
+  shouldResumeSession,
+  toPresenceSnapshot,
+  type AgentPresenceSnapshot,
+  type StoredRoomSession,
+} from "./presence";
 import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -34,6 +41,10 @@ interface AgentInfo {
   agent_id: string;
   name: string;
   joined_at: string;
+}
+
+interface AgentSessionState extends StoredRoomSession {
+  room_id: string;
 }
 
 interface WsMessage {
@@ -63,7 +74,7 @@ export default {
     if (path === "/" && request.method === "GET") {
       return Response.json({
         name: "AgentLink",
-        version: "2.0.2",
+        version: "2.0.3",
         backend: "Cloudflare Workers + Durable Objects",
         endpoints: {
           list_rooms: "GET /rooms",
@@ -162,7 +173,6 @@ export default {
 // ─── Durable Object: Room ─────────────────────────────────────────────────────
 
 export class AgentLinkRoom extends DurableObject {
-  private agents: Map<WebSocket, AgentInfo> = new Map();
   private sequenceCounter: number | null = null;
 
   async fetch(request: Request): Promise<Response> {
@@ -173,51 +183,79 @@ export class AgentLinkRoom extends DurableObject {
 
     const agentName = request.headers.get("X-Agent-Name") || "unknown";
     const roomId    = request.headers.get("X-Room-Id") || "unknown";
-    const agentId   = generateId(8);
+    const sessionId = new URL(request.url).searchParams.get("session_id") || generateId(16);
+    const now = new Date().toISOString();
+    const session = await this.resolveSession({
+      sessionId,
+      agentName,
+      now,
+    });
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    const joinSequence = await this.nextSequence();
 
     // Pakai Hibernation API
-    this.ctx.acceptWebSocket(server, [agentId, agentName, roomId]);
+    this.ctx.acceptWebSocket(server, [session.agentId, agentName, roomId, sessionId]);
+    const state: AgentSessionState = {
+      session_id: sessionId,
+      agent_id: session.agentId,
+      name: agentName,
+      room_id: roomId,
+      joined_at: session.joinedAt,
+      last_seen_at: now,
+      presence: "online",
+    };
+    this.writeAgentState(server, state);
+    await this.storeSessionState(state);
+    this.closeDuplicateSessions(server, sessionId);
+
+    const joinSequence = await this.nextSequence();
+    const heartbeat = buildHeartbeatConfig();
 
     // Kirim info ke agent yang baru join
-    const existingAgents = [...this.ctx.getWebSockets()].map(ws => {
-      const tags = this.ctx.getTags(ws);
-      return { agent_id: tags[0], name: tags[1] };
-    }).filter(a => a.agent_id !== agentId);
+    const existingAgents = this.listActiveAgents({
+      excludeAgentId: state.agent_id,
+      excludeSessionId: sessionId,
+    });
 
     server.send(JSON.stringify({
       type: "welcome",
-      agent_id: agentId,
+      agent_id: state.agent_id,
       name: agentName,
       room_id: roomId,
       last_sequence: joinSequence,
+      joined_at: state.joined_at,
+      last_seen_at: state.last_seen_at,
+      presence: state.presence,
+      session_resumed: session.reconnected,
+      heartbeat_interval_seconds: heartbeat.heartbeat_interval_seconds,
+      heartbeat_timeout_seconds: heartbeat.heartbeat_timeout_seconds,
+      reconnect_window_seconds: heartbeat.reconnect_window_seconds,
       agents: existingAgents,
-      message: `Selamat datang di room '${roomId}'.`,
+      message: session.reconnected
+        ? `Berhasil terhubung kembali ke room '${roomId}'.`
+        : `Selamat datang di room '${roomId}'.`,
     }));
 
     // Broadcast ke semua agent lain: ada yang join
-    const joinedAt = new Date().toISOString();
+    const eventName = session.reconnected ? "agent_reconnected" : "agent_joined";
     this.broadcast(server, JSON.stringify(createRoomEvent({
       roomId,
       sequence: joinSequence,
-      timestamp: joinedAt,
-      event: "agent_joined",
-      agentId,
+      timestamp: now,
+      event: eventName,
+      agentId: state.agent_id,
       name: agentName,
+      presence: state.presence,
+      joinedAt: state.joined_at,
+      lastSeenAt: state.last_seen_at,
+      sessionResumed: session.reconnected,
     })));
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    const tags    = this.ctx.getTags(ws);
-    const agentId = tags[0];
-    const name    = tags[1];
-    const roomId  = tags[2];
-
     let msg: WsMessage;
     try {
       msg = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
@@ -226,9 +264,25 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
+    const agentState = await this.touchAgentState(ws);
+    const agentId = agentState.agent_id;
+    const name = agentState.name;
+    const roomId = agentState.room_id;
+
     // Handle ping
     if (msg.type === "ping") {
-      ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+      const heartbeat = buildHeartbeatConfig();
+      ws.send(JSON.stringify({
+        type: "pong",
+        room_id: roomId,
+        agent_id: agentId,
+        presence: agentState.presence,
+        timestamp: agentState.last_seen_at,
+        last_seen_at: agentState.last_seen_at,
+        heartbeat_interval_seconds: heartbeat.heartbeat_interval_seconds,
+        heartbeat_timeout_seconds: heartbeat.heartbeat_timeout_seconds,
+        echo_sent_at: typeof msg.sent_at === "string" ? msg.sent_at : undefined,
+      }));
       return;
     }
 
@@ -314,24 +368,32 @@ export class AgentLinkRoom extends DurableObject {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    const tags    = this.ctx.getTags(ws);
-    const agentId = tags[0];
-    const name    = tags[1];
-    const roomId  = tags[2];
+    const state = this.readAgentState(ws);
+    if (state.session_id && this.hasActiveSession(state.session_id, ws)) {
+      return;
+    }
+
     const timestamp = new Date().toISOString();
+    const offlineState: AgentSessionState = {
+      ...state,
+      last_seen_at: timestamp,
+      presence: "offline",
+    };
+    await this.storeSessionState(offlineState);
     const sequence = await this.nextSequence();
 
     // Broadcast ke semua: ada yang leave
     this.broadcast(ws, JSON.stringify(createRoomEvent({
-      roomId,
+      roomId: state.room_id,
       sequence,
       timestamp,
       event: "agent_left",
-      agentId,
-      name,
+      agentId: state.agent_id,
+      name: state.name,
+      presence: offlineState.presence,
+      joinedAt: state.joined_at,
+      lastSeenAt: offlineState.last_seen_at,
     })));
-
-    ws.close(code, "Closing");
   }
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
@@ -351,6 +413,131 @@ export class AgentLinkRoom extends DurableObject {
     this.sequenceCounter = next;
     await this.ctx.storage.put("room:sequence", next);
     return next;
+  }
+
+  private readAgentState(ws: WebSocket): AgentSessionState {
+    const attachment = ws.deserializeAttachment();
+    if (attachment && typeof attachment === "object") {
+      return attachment as AgentSessionState;
+    }
+
+    const tags = this.ctx.getTags(ws);
+    const timestamp = new Date().toISOString();
+    return {
+      session_id: tags[3] || "",
+      agent_id: tags[0] || "unknown",
+      name: tags[1] || "unknown",
+      room_id: tags[2] || "unknown",
+      joined_at: timestamp,
+      last_seen_at: timestamp,
+      presence: "online",
+    };
+  }
+
+  private writeAgentState(ws: WebSocket, state: AgentSessionState): AgentSessionState {
+    ws.serializeAttachment(state);
+    return state;
+  }
+
+  private async touchAgentState(ws: WebSocket): Promise<AgentSessionState> {
+    const nextState: AgentSessionState = {
+      ...this.readAgentState(ws),
+      last_seen_at: new Date().toISOString(),
+      presence: "online",
+    };
+    this.writeAgentState(ws, nextState);
+    await this.storeSessionState(nextState);
+    return nextState;
+  }
+
+  private listActiveAgents(options: {
+    excludeAgentId?: string;
+    excludeSessionId?: string;
+  } = {}): AgentPresenceSnapshot[] {
+    const snapshots = new Map<string, AgentPresenceSnapshot>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const state = this.readAgentState(ws);
+      if (options.excludeAgentId && state.agent_id === options.excludeAgentId) {
+        continue;
+      }
+      if (options.excludeSessionId && state.session_id === options.excludeSessionId) {
+        continue;
+      }
+      snapshots.set(state.agent_id, toPresenceSnapshot(state));
+    }
+    return [...snapshots.values()];
+  }
+
+  private hasActiveSession(sessionId: string, excludedWs: WebSocket): boolean {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === excludedWs) {
+        continue;
+      }
+      if (this.readAgentState(ws).session_id === sessionId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private closeDuplicateSessions(currentWs: WebSocket, sessionId: string): void {
+    if (!sessionId) {
+      return;
+    }
+
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === currentWs) {
+        continue;
+      }
+      if (this.readAgentState(ws).session_id === sessionId) {
+        try {
+          ws.close(1012, "Session resumed elsewhere");
+        } catch {}
+      }
+    }
+  }
+
+  private async storeSessionState(state: AgentSessionState): Promise<void> {
+    if (!state.session_id) {
+      return;
+    }
+
+    const stored: StoredRoomSession = {
+      session_id: state.session_id,
+      agent_id: state.agent_id,
+      name: state.name,
+      joined_at: state.joined_at,
+      last_seen_at: state.last_seen_at,
+      presence: state.presence,
+    };
+    await this.ctx.storage.put(`session:${state.session_id}`, stored);
+  }
+
+  private async resolveSession(params: {
+    sessionId: string;
+    agentName: string;
+    now: string;
+  }): Promise<{ agentId: string; joinedAt: string; reconnected: boolean }> {
+    const stored = await this.ctx.storage.get<StoredRoomSession>(
+      `session:${params.sessionId}`,
+    );
+
+    if (
+      stored &&
+      shouldResumeSession({ lastSeenAt: stored.last_seen_at, now: params.now })
+    ) {
+      return {
+        agentId: stored.agent_id,
+        joinedAt: stored.joined_at,
+        reconnected: true,
+      };
+    }
+
+    return {
+      agentId: generateId(8),
+      joinedAt: params.now,
+      reconnected: false,
+    };
   }
 
   // Broadcast ke semua kecuali sender
