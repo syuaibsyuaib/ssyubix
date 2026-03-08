@@ -22,6 +22,11 @@ import websockets.client
 from websockets.exceptions import ConnectionClosed
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from .onboarding import (
+    READ_ME_FIRST_MARKDOWN,
+    READ_ME_FIRST_PROMPT,
+    SERVER_INSTRUCTIONS,
+)
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -1165,7 +1170,7 @@ async def lifespan(server):
         except Exception: pass
     await http_session.close()
 
-mcp = FastMCP("agentlink", lifespan=lifespan)
+mcp = FastMCP("agentlink", instructions=SERVER_INSTRUCTIONS, lifespan=lifespan)
 
 class RegisterInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -1203,6 +1208,25 @@ class ReadInboxInput(BaseModel):
 class LocalRoomSummaryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     room_id: Optional[str] = Field(default=None, description="ID room untuk membaca snapshot lokal tertentu")
+
+
+@mcp.resource(
+    "ssyubix://guides/readme-first",
+    name="ssyubix-readme-first",
+    description="Panduan onboarding dan best practice untuk agent yang baru memakai ssyubix.",
+    mime_type="text/markdown",
+)
+def readme_first_resource() -> str:
+    return READ_ME_FIRST_MARKDOWN
+
+
+@mcp.prompt(
+    name="ssyubix_readme_first",
+    title="ssyubix Readme First",
+    description="Prompt onboarding ringkas untuk agent yang baru memakai ssyubix.",
+)
+def readme_first_prompt() -> str:
+    return READ_ME_FIRST_PROMPT
 
 
 class CapabilitySkillInput(BaseModel):

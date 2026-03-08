@@ -891,5 +891,19 @@ class CapabilityToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["agent"]["skills"], [])
 
 
+class OnboardingGuideTests(unittest.TestCase):
+    def test_readme_first_resource_mentions_core_best_practices(self):
+        markdown = server.readme_first_resource()
+        self.assertIn("agent_register", markdown)
+        self.assertIn("room_join", markdown)
+        self.assertIn("capability_upsert_self", markdown)
+        self.assertIn("ssyubix://guides/readme-first", markdown)
+
+    def test_readme_first_prompt_points_agents_to_the_onboarding_resource(self):
+        prompt = server.readme_first_prompt()
+        self.assertIn("ssyubix://guides/readme-first", prompt)
+        self.assertIn("agent_read_inbox", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

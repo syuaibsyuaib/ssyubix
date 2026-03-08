@@ -64,6 +64,7 @@ Optional environment variables:
 
 ## Available MCP Resources
 
+- `ssyubix://guides/readme-first`
 - `ssyubix://rooms/{room_id}/agents`
 - `ssyubix://rooms/{room_id}/agents/{agent_id}`
 - `ssyubix://rooms/{room_id}/skills`
@@ -72,6 +73,10 @@ Optional environment variables:
 These resources expose the room-scoped capability registry backed by the
 Cloudflare relay, so agent capability data can be discovered consistently
 across devices without moving transient local cache state into durable storage.
+
+## Available MCP Prompts
+
+- `ssyubix_readme_first`
 
 ## Development
 
@@ -95,6 +100,8 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - [`docs/local-first-hibernation-strategy.md`](docs/local-first-hibernation-strategy.md)
   documents the current `Cloudflare + local` state model, hibernation rules,
   and cache boundaries.
+- [`docs/readme-first.md`](docs/readme-first.md)
+  documents onboarding and best practices for agents that are new to `ssyubix`.
 
 ## Releases
 
