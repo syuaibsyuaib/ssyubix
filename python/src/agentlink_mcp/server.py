@@ -35,6 +35,9 @@ LOCAL_RETRY_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_LIMIT", "50")
 LOCAL_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS", "5")))
 LOCAL_RETRY_TTL_SECONDS = max(60, int(os.environ.get("SSYUBIX_LOCAL_RETRY_TTL_SECONDS", "21600")))
 LOCAL_SUMMARY_STALE_SECONDS = max(60, int(os.environ.get("SSYUBIX_LOCAL_SUMMARY_STALE_SECONDS", "900")))
+LOCAL_ROOM_CACHE_TTL_SECONDS = max(3600, int(os.environ.get("SSYUBIX_LOCAL_ROOM_CACHE_TTL_SECONDS", "604800")))
+LOCAL_ROOM_CACHE_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_ROOM_CACHE_LIMIT", "50")))
+LOCAL_CORRUPT_CACHE_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_CORRUPT_CACHE_LIMIT", "20")))
 
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
@@ -83,6 +86,10 @@ def _room_cache_dir() -> Path:
     return local_state_dir / "rooms" / _server_cache_key()
 
 
+def _corrupt_cache_dir() -> Path:
+    return local_state_dir / "corrupt" / _server_cache_key()
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -127,6 +134,43 @@ def _clip_text(value: Any, limit: int = 120) -> Optional[str]:
     if len(collapsed) <= limit:
         return collapsed
     return f"{collapsed[: limit - 1]}…"
+
+
+def _message_identity(entry: Any) -> Optional[tuple]:
+    if not isinstance(entry, dict):
+        return None
+    message_id = entry.get("message_id")
+    if isinstance(message_id, str) and message_id:
+        return ("message_id", message_id)
+    sequence = entry.get("sequence") if isinstance(entry.get("sequence"), int) else None
+    return (
+        entry.get("type"),
+        sequence,
+        entry.get("event"),
+        entry.get("agent_id"),
+        entry.get("from"),
+        entry.get("timestamp"),
+    )
+
+
+def _compact_messages(entries: Any) -> list[dict]:
+    if not isinstance(entries, list):
+        return []
+
+    compacted: list[dict] = []
+    seen: set[tuple] = set()
+    for entry in reversed(entries):
+        if not isinstance(entry, dict):
+            continue
+        identity = _message_identity(entry)
+        if identity is not None and identity in seen:
+            continue
+        if identity is not None:
+            seen.add(identity)
+        compacted.append(entry)
+
+    compacted.reverse()
+    return compacted[-LOCAL_INBOX_LIMIT:]
 
 
 def _sanitize_peer_snapshot(peer: Any) -> Optional[dict]:
@@ -296,47 +340,133 @@ def _write_json_file(path: Path, payload: dict):
     temp_path.replace(path)
 
 
+def _empty_local_room_state(
+    room_id: str,
+    *,
+    restored: bool,
+    recovered_from_corrupt_cache: bool = False,
+    corrupt_cache_path: Optional[str] = None,
+) -> dict:
+    summary = _build_local_room_summary(
+        room_id=room_id.upper(),
+        room_state={},
+        messages=[],
+        retry_queue=[],
+    )
+    return {
+        "room_id": room_id.upper(),
+        "messages": [],
+        "retry_queue": [],
+        "last_read_sequence": 0,
+        "last_sequence": 0,
+        "summary": summary,
+        "restored": restored,
+        "cached_at": None,
+        "recovered_from_corrupt_cache": recovered_from_corrupt_cache,
+        "corrupt_cache_path": corrupt_cache_path,
+    }
+
+
+def _prune_corrupt_cache_files():
+    corrupt_dir = _corrupt_cache_dir()
+    if not corrupt_dir.exists():
+        return
+    candidates = sorted(
+        [path for path in corrupt_dir.glob("*.json") if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates[LOCAL_CORRUPT_CACHE_LIMIT:]:
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("Corrupt cache cleanup failed for %s: %s", path, exc)
+
+
+def _quarantine_corrupt_cache(cache_path: Path) -> Optional[str]:
+    corrupt_dir = _corrupt_cache_dir()
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    destination = corrupt_dir / f"{cache_path.stem}-{uuid.uuid4().hex[:8]}.json"
+    try:
+        cache_path.replace(destination)
+    except OSError as exc:
+        logger.warning("Local cache quarantine failed for %s: %s", cache_path, exc)
+        return None
+    _prune_corrupt_cache_files()
+    return str(destination)
+
+
+def _prune_local_cache_files(active_room_id: Optional[str] = None):
+    cache_dir = _room_cache_dir()
+    if cache_dir.exists():
+        active_room_id = active_room_id.upper() if isinstance(active_room_id, str) else None
+        cutoff = time.time() - LOCAL_ROOM_CACHE_TTL_SECONDS
+        room_files = sorted(
+            [path for path in cache_dir.glob("*.json") if path.is_file()],
+            key=lambda path: path.stat().st_mtime,
+        )
+        kept: list[Path] = []
+        for cache_path in room_files:
+            room_id = cache_path.stem.upper()
+            if active_room_id and room_id == active_room_id:
+                kept.append(cache_path)
+                continue
+            try:
+                if cache_path.stat().st_mtime < cutoff:
+                    cache_path.unlink()
+                    continue
+            except OSError as exc:
+                logger.warning("Local cache retention cleanup failed for %s: %s", cache_path, exc)
+                continue
+            kept.append(cache_path)
+
+        overflow_candidates = [
+            path for path in kept
+            if not active_room_id or path.stem.upper() != active_room_id
+        ]
+        while len(kept) > LOCAL_ROOM_CACHE_LIMIT and overflow_candidates:
+            cache_path = overflow_candidates.pop(0)
+            try:
+                cache_path.unlink()
+                kept.remove(cache_path)
+            except OSError as exc:
+                logger.warning("Local cache compaction failed for %s: %s", cache_path, exc)
+
+    _prune_corrupt_cache_files()
+
+
 def _load_local_room_state(room_id: str) -> dict:
     cache_path = _room_cache_path(room_id)
     if not cache_path.exists():
-        summary = _build_local_room_summary(
-            room_id=room_id.upper(),
-            room_state={},
-            messages=[],
-            retry_queue=[],
-        )
-        return {
-            "room_id": room_id.upper(),
-            "messages": [],
-            "retry_queue": [],
-            "last_read_sequence": 0,
-            "last_sequence": 0,
-            "summary": summary,
-            "restored": False,
-        }
+        return _empty_local_room_state(room_id, restored=False)
+    try:
+        if cache_path.stat().st_mtime < time.time() - LOCAL_ROOM_CACHE_TTL_SECONDS:
+            cache_path.unlink()
+            return _empty_local_room_state(room_id, restored=False)
+    except OSError as exc:
+        logger.warning("Local cache stat failed for %s: %s", cache_path, exc)
+        return _empty_local_room_state(room_id, restored=False)
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        summary = _build_local_room_summary(
-            room_id=room_id.upper(),
-            room_state={},
-            messages=[],
-            retry_queue=[],
+        quarantined_path = _quarantine_corrupt_cache(cache_path)
+        return _empty_local_room_state(
+            room_id,
+            restored=False,
+            recovered_from_corrupt_cache=True,
+            corrupt_cache_path=quarantined_path,
         )
-        return {
-            "room_id": room_id.upper(),
-            "messages": [],
-            "retry_queue": [],
-            "last_read_sequence": 0,
-            "last_sequence": 0,
-            "summary": summary,
-            "restored": False,
-        }
 
-    messages = payload.get("messages", [])
-    if not isinstance(messages, list):
-        messages = []
-    messages = [message for message in messages if isinstance(message, dict)][-LOCAL_INBOX_LIMIT:]
+    if not isinstance(payload, dict):
+        quarantined_path = _quarantine_corrupt_cache(cache_path)
+        return _empty_local_room_state(
+            room_id,
+            restored=False,
+            recovered_from_corrupt_cache=True,
+            corrupt_cache_path=quarantined_path,
+        )
+
+    messages = _compact_messages(payload.get("messages", []))
     retry_queue = _normalized_retry_queue(payload.get("retry_queue"))
     room_state_for_summary = payload.get("summary", {}).get("room")
     if not isinstance(room_state_for_summary, dict):
@@ -361,6 +491,8 @@ def _load_local_room_state(room_id: str) -> dict:
         "cached_at": payload.get("cached_at"),
         "summary": summary,
         "restored": True,
+        "recovered_from_corrupt_cache": False,
+        "corrupt_cache_path": None,
     }
 
 
@@ -370,11 +502,11 @@ def _persist_local_room_state():
     room_id = current_room.get("room_id")
     if not isinstance(room_id, str) or not room_id:
         return
-    messages = [
+    messages = _compact_messages([
         message
         for message in inbox[-LOCAL_INBOX_LIMIT:]
         if isinstance(message, dict) and message.get("room_id", room_id) == room_id
-    ]
+    ])
     retry_queue = _normalized_retry_queue(current_room.get("retry_queue"))
     summary = _build_local_room_summary(
         room_id=room_id,
@@ -396,6 +528,7 @@ def _persist_local_room_state():
     }
     try:
         _write_json_file(_room_cache_path(room_id), payload)
+        _prune_local_cache_files(active_room_id=room_id)
     except OSError as exc:
         logger.warning("Local cache write failed: %s", exc)
 
@@ -421,7 +554,7 @@ def _restore_local_room_state(room_id: str):
             continue
         seen_keys.add(key)
         merged_messages.append(message)
-    inbox[:] = merged_messages[-LOCAL_INBOX_LIMIT:]
+    inbox[:] = _compact_messages(merged_messages)
     if current_room is None:
         return
     current_room["retry_queue"] = cached["retry_queue"]
@@ -431,6 +564,8 @@ def _restore_local_room_state(room_id: str):
     current_room["local_cached_last_sequence"] = cached["last_sequence"]
     current_room["local_cache_restored"] = cached["restored"]
     current_room["local_cache_restored_at"] = cached.get("cached_at")
+    current_room["local_cache_recovered"] = cached.get("recovered_from_corrupt_cache", False)
+    current_room["local_cache_recovery_path"] = cached.get("corrupt_cache_path")
     current_room["local_retry_queue_count"] = len(cached["retry_queue"])
     current_room["local_summary"] = cached["summary"]
     _persist_local_room_state()
@@ -443,8 +578,7 @@ def _append_inbox_entry(entry: dict):
         if room_id is not None:
             entry = {**entry, "room_id": room_id}
     inbox.append(entry)
-    if len(inbox) > LOCAL_INBOX_LIMIT:
-        del inbox[:-LOCAL_INBOX_LIMIT]
+    inbox[:] = _compact_messages(inbox)
     _persist_local_room_state()
 
 
@@ -463,11 +597,14 @@ def _read_local_room_summary(room_id: str) -> dict:
         "room_id": room_id.upper(),
         "cache_path": str(_room_cache_path(room_id)),
         "restored": cached.get("restored", False),
+        "recovered_from_corrupt_cache": cached.get("recovered_from_corrupt_cache", False),
+        "corrupt_cache_path": cached.get("corrupt_cache_path"),
         "summary": summary,
     }
 
 
 def _list_local_room_summaries() -> list[dict]:
+    _prune_local_cache_files()
     cache_dir = _room_cache_dir()
     if not cache_dir.exists():
         return []

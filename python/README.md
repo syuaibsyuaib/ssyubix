@@ -35,6 +35,9 @@ uvx ssyubix
 - `SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS`: optional max replay attempts for one queued action (default `5`)
 - `SSYUBIX_LOCAL_RETRY_TTL_SECONDS`: optional local retry retention in seconds (default `21600`)
 - `SSYUBIX_LOCAL_SUMMARY_STALE_SECONDS`: optional staleness threshold for local room snapshots (default `900`)
+- `SSYUBIX_LOCAL_ROOM_CACHE_TTL_SECONDS`: optional retention window for one room cache file before it is dropped instead of restored (default `604800`)
+- `SSYUBIX_LOCAL_ROOM_CACHE_LIMIT`: optional max number of room cache files kept per server endpoint (default `50`)
+- `SSYUBIX_LOCAL_CORRUPT_CACHE_LIMIT`: optional max number of quarantined corrupt cache files kept for recovery/debugging (default `20`)
 
 Default Worker endpoint:
 
@@ -66,6 +69,12 @@ or zero-recipient deliveries, then replay those actions after reconnect when pos
 
 `room_local_summary` reads local room snapshots from disk so a client can inspect
 the last known room state even when it is not currently connected.
+
+Local room cache files are also compacted and pruned automatically:
+
+- duplicate inbox entries are compacted on load/save
+- stale room cache files are dropped instead of restored after the retention TTL
+- corrupt cache files are quarantined locally so recovery can continue safely
 
 ## Development
 
