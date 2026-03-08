@@ -11,6 +11,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+import { createAck, createRoomEvent, createRoomMessage } from "./message-protocol";
 import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ interface AgentInfo {
 }
 
 interface WsMessage {
-  type: "message" | "event" | "ping" | "pong" | "info";
+  type: "send" | "broadcast" | "ping" | "pong" | "message" | "event" | "info";
   [key: string]: unknown;
 }
 
@@ -62,7 +63,7 @@ export default {
     if (path === "/" && request.method === "GET") {
       return Response.json({
         name: "AgentLink",
-        version: "2.0.1",
+        version: "2.0.2",
         backend: "Cloudflare Workers + Durable Objects",
         endpoints: {
           list_rooms: "GET /rooms",
@@ -162,6 +163,7 @@ export default {
 
 export class AgentLinkRoom extends DurableObject {
   private agents: Map<WebSocket, AgentInfo> = new Map();
+  private sequenceCounter: number | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const upgradeHeader = request.headers.get("Upgrade");
@@ -175,6 +177,7 @@ export class AgentLinkRoom extends DurableObject {
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
+    const joinSequence = await this.nextSequence();
 
     // Pakai Hibernation API
     this.ctx.acceptWebSocket(server, [agentId, agentName, roomId]);
@@ -190,18 +193,21 @@ export class AgentLinkRoom extends DurableObject {
       agent_id: agentId,
       name: agentName,
       room_id: roomId,
+      last_sequence: joinSequence,
       agents: existingAgents,
       message: `Selamat datang di room '${roomId}'.`,
     }));
 
     // Broadcast ke semua agent lain: ada yang join
-    this.broadcast(server, JSON.stringify({
-      type: "event",
+    const joinedAt = new Date().toISOString();
+    this.broadcast(server, JSON.stringify(createRoomEvent({
+      roomId,
+      sequence: joinSequence,
+      timestamp: joinedAt,
       event: "agent_joined",
-      agent_id: agentId,
+      agentId,
       name: agentName,
-      timestamp: new Date().toISOString(),
-    }));
+    })));
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -210,6 +216,7 @@ export class AgentLinkRoom extends DurableObject {
     const tags    = this.ctx.getTags(ws);
     const agentId = tags[0];
     const name    = tags[1];
+    const roomId  = tags[2];
 
     let msg: WsMessage;
     try {
@@ -230,62 +237,99 @@ export class AgentLinkRoom extends DurableObject {
       const targetId = msg.to as string;
       const sockets  = this.ctx.getWebSockets();
       let delivered  = false;
+      let messageId: string | undefined;
+      let sequence: number | undefined;
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const timestamp = new Date().toISOString();
 
       for (const sock of sockets) {
         const sockTags = this.ctx.getTags(sock);
         if (sockTags[0] === targetId) {
-          sock.send(JSON.stringify({
-            type: "message",
+          sequence = await this.nextSequence();
+          const payload = createRoomMessage({
+            roomId,
+            sequence,
+            timestamp,
             from: agentId,
-            from_name: name,
+            fromName: name,
             content: msg.content,
-            msg_type: msg.msg_type || "text",
-            timestamp: new Date().toISOString(),
-          }));
+            msgType: typeof msg.msg_type === "string" ? msg.msg_type : "text",
+          });
+          messageId = payload.message_id;
+          sock.send(JSON.stringify(payload));
           delivered = true;
           break;
         }
       }
 
-      ws.send(JSON.stringify({
-        type: "ack",
+      ws.send(JSON.stringify(createAck({
+        action: "send",
+        roomId,
+        requestId,
         delivered,
+        recipientCount: delivered ? 1 : 0,
+        timestamp,
+        messageId,
+        sequence,
         to: targetId,
-      }));
+      })));
       return;
     }
 
     // Handle broadcast ke semua
     if (msg.type === "broadcast") {
-      this.broadcast(ws, JSON.stringify({
-        type: "message",
+      const timestamp = new Date().toISOString();
+      const sequence = await this.nextSequence();
+      const payload = createRoomMessage({
+        roomId,
+        sequence,
+        timestamp,
         from: agentId,
-        from_name: name,
+        fromName: name,
         content: msg.content,
-        msg_type: msg.msg_type || "text",
+        msgType: typeof msg.msg_type === "string" ? msg.msg_type : "text",
         broadcast: true,
-        timestamp: new Date().toISOString(),
-      }));
-      ws.send(JSON.stringify({ type: "ack", delivered: true, broadcast: true }));
+      });
+      const recipientCount = this.broadcast(ws, JSON.stringify(payload));
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+
+      ws.send(JSON.stringify(createAck({
+        action: "broadcast",
+        roomId,
+        requestId,
+        delivered: recipientCount > 0,
+        recipientCount,
+        timestamp,
+        messageId: payload.message_id,
+        sequence: payload.sequence,
+        broadcast: true,
+      })));
       return;
     }
 
-    ws.send(JSON.stringify({ type: "error", error: `Unknown type: ${msg.type}` }));
+    ws.send(JSON.stringify({
+      type: "error",
+      error: `Unknown type: ${msg.type}`,
+    }));
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     const tags    = this.ctx.getTags(ws);
     const agentId = tags[0];
     const name    = tags[1];
+    const roomId  = tags[2];
+    const timestamp = new Date().toISOString();
+    const sequence = await this.nextSequence();
 
     // Broadcast ke semua: ada yang leave
-    this.broadcast(ws, JSON.stringify({
-      type: "event",
+    this.broadcast(ws, JSON.stringify(createRoomEvent({
+      roomId,
+      sequence,
+      timestamp,
       event: "agent_left",
-      agent_id: agentId,
+      agentId,
       name,
-      timestamp: new Date().toISOString(),
-    }));
+    })));
 
     ws.close(code, "Closing");
   }
@@ -295,13 +339,32 @@ export class AgentLinkRoom extends DurableObject {
     ws.close(1011, "Internal error");
   }
 
+  private async getCurrentSequence(): Promise<number> {
+    if (this.sequenceCounter === null) {
+      this.sequenceCounter = (await this.ctx.storage.get<number>("room:sequence")) ?? 0;
+    }
+    return this.sequenceCounter;
+  }
+
+  private async nextSequence(): Promise<number> {
+    const next = (await this.getCurrentSequence()) + 1;
+    this.sequenceCounter = next;
+    await this.ctx.storage.put("room:sequence", next);
+    return next;
+  }
+
   // Broadcast ke semua kecuali sender
-  private broadcast(sender: WebSocket | null, message: string): void {
+  private broadcast(sender: WebSocket | null, message: string): number {
+    let delivered = 0;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws !== sender) {
-        try { ws.send(message); } catch {}
+        try {
+          ws.send(message);
+          delivered += 1;
+        } catch {}
       }
     }
+    return delivered;
   }
 }
 
