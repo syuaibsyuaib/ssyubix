@@ -10,6 +10,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Added local room inbox caching and per-device read cursor persistence in the Python MCP client
 - Added `agent_read_inbox.only_unread` and `agent_read_inbox.mark_read` for local unread tracking without cloud writes
+- Added a local retry queue and offline checkpoint path for outbound `send` and `broadcast` actions
 
 ## [2.0.3] - 2026-03-08
 

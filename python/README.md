@@ -31,6 +31,9 @@ uvx ssyubix
 - `AGENTLINK_URL`: optional override for the default Worker endpoint
 - `SSYUBIX_LOCAL_STATE_DIR`: optional override for local cache/checkpoint storage
 - `SSYUBIX_LOCAL_INBOX_LIMIT`: optional max cached inbox entries per room (default `200`)
+- `SSYUBIX_LOCAL_RETRY_LIMIT`: optional max queued outbound retry entries per room (default `50`)
+- `SSYUBIX_LOCAL_RETRY_MAX_ATTEMPTS`: optional max replay attempts for one queued action (default `5`)
+- `SSYUBIX_LOCAL_RETRY_TTL_SECONDS`: optional local retry retention in seconds (default `21600`)
 
 Default Worker endpoint:
 
@@ -55,6 +58,9 @@ https://agentlink.syuaibsyuaib.workers.dev
 
 - `only_unread`: return only entries above the local per-device read cursor
 - `mark_read`: advance the local per-device read cursor without clearing cloud state
+
+`agent_send` and `agent_broadcast` also keep a local retry queue for transient disconnects
+or zero-recipient deliveries, then replay those actions after reconnect when possible.
 
 ## Development
 
