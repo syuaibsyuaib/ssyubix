@@ -11,6 +11,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Env {
@@ -18,7 +20,7 @@ export interface Env {
   AGENTLINK_REGISTRY: DurableObjectNamespace;
 }
 
-interface RoomMeta {
+interface RoomMeta extends StoredRoomMeta {
   room_id: string;
   name: string;
   is_private: boolean;
@@ -76,7 +78,7 @@ export default {
         env.AGENTLINK_REGISTRY.idFromName("global")
       );
       const resp = await registry.fetch(new Request("http://internal/list"));
-      const rooms = await resp.json() as RoomMeta[];
+      const rooms = await resp.json() as ReturnType<typeof listPublicRooms>;
       return Response.json(rooms, { headers: corsHeaders });
     }
 
@@ -314,7 +316,7 @@ export class AgentLinkRegistry extends DurableObject {
     // List semua room
     if (action === "list") {
       const all = await this.ctx.storage.list<RoomMeta>({ prefix: "room:" });
-      const rooms = [...all.values()];
+      const rooms = listPublicRooms(all.values());
       return Response.json(rooms);
     }
 
