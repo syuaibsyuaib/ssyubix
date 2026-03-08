@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-03-09
+
 ### Added
 
 - Added local room inbox caching and per-device read cursor persistence in the Python MCP client
