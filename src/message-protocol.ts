@@ -20,6 +20,8 @@ export interface RoomEventPayload extends SequencedRoomPayload {
   agent_id: string;
   stable_agent_identity_id?: string;
   name: string;
+  task_id?: string;
+  task?: unknown;
   presence?: "online" | "offline";
   joined_at?: string;
   last_seen_at?: string;
@@ -31,6 +33,10 @@ export interface AckPayload {
   action:
     | "send"
     | "broadcast"
+    | "task_offer"
+    | "task_accept"
+    | "task_reject"
+    | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
     | "capability_remove";
@@ -42,6 +48,7 @@ export interface AckPayload {
   timestamp: string;
   message_id?: string;
   sequence?: number;
+  task_id?: string;
   to?: string;
   broadcast?: boolean;
 }
@@ -82,6 +89,8 @@ export function createRoomEvent(params: {
   agentId: string;
   stableAgentIdentityId?: string;
   name: string;
+  taskId?: string;
+  task?: unknown;
   presence?: "online" | "offline";
   joinedAt?: string;
   lastSeenAt?: string;
@@ -97,6 +106,8 @@ export function createRoomEvent(params: {
     agent_id: params.agentId,
     stable_agent_identity_id: params.stableAgentIdentityId,
     name: params.name,
+    task_id: params.taskId,
+    task: params.task,
     presence: params.presence,
     joined_at: params.joinedAt,
     last_seen_at: params.lastSeenAt,
@@ -108,6 +119,10 @@ export function createAck(params: {
   action:
     | "send"
     | "broadcast"
+    | "task_offer"
+    | "task_accept"
+    | "task_reject"
+    | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
     | "capability_remove";
@@ -119,6 +134,7 @@ export function createAck(params: {
   timestamp: string;
   messageId?: string;
   sequence?: number;
+  taskId?: string;
   to?: string;
   broadcast?: boolean;
 }): AckPayload {
@@ -133,6 +149,7 @@ export function createAck(params: {
     timestamp: params.timestamp,
     message_id: params.messageId,
     sequence: params.sequence,
+    task_id: params.taskId,
     to: params.to,
     broadcast: params.broadcast,
   };

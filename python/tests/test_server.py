@@ -118,6 +118,30 @@ class HandleIncomingTests(unittest.TestCase):
             "stable-peer-9999",
         )
 
+    def test_task_event_is_preserved_in_inbox(self):
+        server._handle_incoming(
+            {
+                "type": "event",
+                "event": "task_offered",
+                "name": "planner-one",
+                "agent_id": "PLANNER1",
+                "stable_agent_identity_id": "stable-planner-1",
+                "task_id": "TASK001",
+                "task": {
+                    "task_id": "TASK001",
+                    "status": "waiting_for_acceptance",
+                    "offered_to_agent_id": "LOCAL123",
+                },
+                "message_id": "ROOM42:9",
+                "sequence": 9,
+                "room_id": "ROOM42",
+                "timestamp": "2026-03-07T00:02:00+00:00",
+            }
+        )
+
+        self.assertEqual(server.inbox[0]["task_id"], "TASK001")
+        self.assertEqual(server.inbox[0]["task"]["status"], "waiting_for_acceptance")
+
     def test_agent_left_event_removes_peer_from_snapshot(self):
         server.current_room["peers"] = {
             "PEER0001": {
@@ -772,13 +796,13 @@ class CapabilityResourceTests(unittest.IsolatedAsyncioTestCase):
         server.http_session = self.original_http_session
         server.room_credentials = self.original_room_credentials
 
-    def test_capability_resource_auth_params_only_exposes_current_room_token(self):
+    def test_room_resource_auth_params_only_exposes_current_room_token(self):
         self.assertEqual(
-            server._capability_resource_auth_params("room42"),
+            server._room_resource_auth_params("room42"),
             {"token": "SECRET123"},
         )
         self.assertEqual(
-            server._capability_resource_auth_params("ROOM99"),
+            server._room_resource_auth_params("ROOM99"),
             {},
         )
 
@@ -795,6 +819,21 @@ class CapabilityResourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(payload["success"])
         self.assertEqual(fake_session.calls[0]["url"], f"{server.AGENTLINK_URL}/capabilities/ROOM42/agents")
+        self.assertEqual(fake_session.calls[0]["params"], {"token": "SECRET123"})
+
+    async def test_fetch_task_resource_uses_room_token_when_available(self):
+        fake_session = _FakeCapabilitySession(
+            _FakeCapabilityResponse(
+                status=200,
+                payload={"success": True, "room_id": "ROOM42", "count": 1, "tasks": []},
+            )
+        )
+        server.http_session = fake_session
+
+        payload = await server._fetch_task_resource("room42")
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(fake_session.calls[0]["url"], f"{server.AGENTLINK_URL}/tasks/ROOM42")
         self.assertEqual(fake_session.calls[0]["params"], {"token": "SECRET123"})
 
     async def test_fetch_capability_resource_raises_for_private_room_without_token(self):
@@ -816,16 +855,19 @@ class CapabilityToolTests(unittest.IsolatedAsyncioTestCase):
         self.original_current_room = server.current_room
         self.original_ws_conn = server.ws_conn
         self.original_agent_id = server.agent_id
+        self.original_stable_agent_identity_id = server.stable_agent_identity_id
         self.original_await_ack = server._await_ack
         self.original_fetch_self = server._fetch_self_capability_profile
         server.current_room = {"room_id": "ROOM42"}
         server.ws_conn = object()
         server.agent_id = "SELF1234"
+        server.stable_agent_identity_id = "stable-self-1234"
 
     def tearDown(self):
         server.current_room = self.original_current_room
         server.ws_conn = self.original_ws_conn
         server.agent_id = self.original_agent_id
+        server.stable_agent_identity_id = self.original_stable_agent_identity_id
         server._await_ack = self.original_await_ack
         server._fetch_self_capability_profile = self.original_fetch_self
 
@@ -926,6 +968,166 @@ class CapabilityToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["success"])
         self.assertIn("kustom dihapus", payload["message"])
         self.assertEqual(payload["agent"]["skills"], [])
+
+
+class TaskToolTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.original_current_room = server.current_room
+        self.original_ws_conn = server.ws_conn
+        self.original_agent_id = server.agent_id
+        self.original_stable_agent_identity_id = server.stable_agent_identity_id
+        self.original_await_ack = server._await_ack
+        self.original_fetch_task_by_id = server._fetch_task_by_id
+        self.original_fetch_task_resource = server._fetch_task_resource
+        server.current_room = {"room_id": "ROOM42"}
+        server.ws_conn = object()
+        server.agent_id = "SELF1234"
+        server.stable_agent_identity_id = "stable-self-1234"
+
+    def tearDown(self):
+        server.current_room = self.original_current_room
+        server.ws_conn = self.original_ws_conn
+        server.agent_id = self.original_agent_id
+        server.stable_agent_identity_id = self.original_stable_agent_identity_id
+        server._await_ack = self.original_await_ack
+        server._fetch_task_by_id = self.original_fetch_task_by_id
+        server._fetch_task_resource = self.original_fetch_task_resource
+
+    async def test_task_offer_returns_task_manifest_after_ack(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "task_offer")
+            self.assertEqual(payload["title"], "Review checklist")
+            self.assertEqual(payload["to_agent_id"], "PEER1234")
+            return "REQ200", {
+                "accepted": True,
+                "message_id": "ROOM42:20",
+                "sequence": 20,
+                "task_id": "TASK001",
+            }
+
+        async def fake_fetch_task(room_id, task_id):
+            self.assertEqual(room_id, "ROOM42")
+            self.assertEqual(task_id, "TASK001")
+            return {
+                "success": True,
+                "room_id": "ROOM42",
+                "task": {
+                    "task_id": "TASK001",
+                    "title": "Review checklist",
+                    "status": "waiting_for_acceptance",
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_task_by_id = fake_fetch_task
+
+        payload = json.loads(
+            await server.task_offer(
+                server.TaskOfferInput(
+                    title="Review checklist",
+                    to_agent_id="PEER1234",
+                    priority="high",
+                )
+            )
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["task_id"], "TASK001")
+        self.assertEqual(payload["delegated_by"], "SELF1234")
+        self.assertEqual(payload["delegated_by_stable_identity_id"], "stable-self-1234")
+        self.assertEqual(payload["task"]["status"], "waiting_for_acceptance")
+
+    async def test_task_accept_reads_updated_task_after_ack(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "task_accept")
+            self.assertEqual(payload["task_id"], "TASK001")
+            return "REQ201", {
+                "accepted": True,
+                "message_id": "ROOM42:21",
+                "sequence": 21,
+                "task_id": "TASK001",
+            }
+
+        async def fake_fetch_task(room_id, task_id):
+            return {
+                "success": True,
+                "room_id": room_id,
+                "task": {
+                    "task_id": task_id,
+                    "status": "accepted",
+                    "responsible_agent_id": "SELF1234",
+                    "responsible_identity_id": "stable-self-1234",
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_task_by_id = fake_fetch_task
+
+        payload = json.loads(await server.task_accept(server.TaskTransitionInput(task_id="TASK001")))
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["task"]["status"], "accepted")
+        self.assertEqual(payload["task"]["responsible_identity_id"], "stable-self-1234")
+
+    async def test_task_defer_forwards_reason_and_schedule_hint(self):
+        async def fake_await_ack(payload, timeout=5.0):
+            self.assertEqual(payload["type"], "task_defer")
+            self.assertEqual(payload["reason"], "Busy right now")
+            self.assertEqual(payload["deferred_until"], "2026-03-10T09:00:00+00:00")
+            return "REQ202", {
+                "accepted": True,
+                "message_id": "ROOM42:22",
+                "sequence": 22,
+                "task_id": "TASK001",
+            }
+
+        async def fake_fetch_task(room_id, task_id):
+            return {
+                "success": True,
+                "room_id": room_id,
+                "task": {
+                    "task_id": task_id,
+                    "status": "deferred",
+                    "response_reason": "Busy right now",
+                    "deferred_until": "2026-03-10T09:00:00+00:00",
+                },
+            }
+
+        server._await_ack = fake_await_ack
+        server._fetch_task_by_id = fake_fetch_task
+
+        payload = json.loads(
+            await server.task_defer(
+                server.TaskDeferInput(
+                    task_id="TASK001",
+                    reason="Busy right now",
+                    deferred_until="2026-03-10T09:00:00+00:00",
+                )
+            )
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["task"]["status"], "deferred")
+        self.assertEqual(payload["task"]["response_reason"], "Busy right now")
+
+    async def test_task_list_returns_room_task_manifest(self):
+        async def fake_fetch_task_resource(room_id, resource_path=""):
+            self.assertEqual(room_id, "ROOM42")
+            self.assertEqual(resource_path, "")
+            return {
+                "success": True,
+                "room_id": room_id,
+                "count": 1,
+                "tasks": [{"task_id": "TASK001", "title": "Review checklist"}],
+            }
+
+        server._fetch_task_resource = fake_fetch_task_resource
+
+        payload = json.loads(await server.task_list())
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["tasks"][0]["task_id"], "TASK001")
 
 
 class OnboardingGuideTests(unittest.TestCase):

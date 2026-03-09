@@ -58,6 +58,12 @@ Optional environment variables:
 - `capability_upsert_self`
 - `capability_set_availability`
 - `capability_remove_self`
+- `task_offer`
+- `task_accept`
+- `task_reject`
+- `task_defer`
+- `task_list`
+- `task_get`
 - `agent_send`
 - `agent_broadcast`
 - `agent_read_inbox`
@@ -70,10 +76,13 @@ Optional environment variables:
 - `ssyubix://rooms/{room_id}/agents/{agent_id}`
 - `ssyubix://rooms/{room_id}/skills`
 - `ssyubix://rooms/{room_id}/skills/{skill_id}`
+- `ssyubix://rooms/{room_id}/tasks`
+- `ssyubix://rooms/{room_id}/tasks/{task_id}`
 
-These resources expose the room-scoped capability registry backed by the
-Cloudflare relay, so agent capability data can be discovered consistently
-across devices without moving transient local cache state into durable storage.
+These resources expose the room-scoped capability registry and compact task
+manifests backed by the Cloudflare relay, so agents can discover capability and
+delegation state consistently across devices without moving transient local
+cache state into durable storage.
 
 ## Available MCP Prompts
 

@@ -38,6 +38,19 @@ import {
   type StoredRoomSession,
 } from "./presence";
 import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
+import {
+  acceptDelegationOffer,
+  createDelegationOffer,
+  createTaskRegistryManifest,
+  deferDelegationOffer,
+  getTask,
+  listTasks,
+  rejectDelegationOffer,
+  ROOM_TASK_REGISTRY_KEY,
+  type StoredTaskManifest,
+  type TaskPriority,
+  type TaskRegistryManifest,
+} from "./task-registry";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +75,27 @@ interface AgentInfo {
   joined_at: string;
 }
 
+interface TaskEventPayload {
+  task_id: string;
+  title: string;
+  status: string;
+  offer_state: string;
+  acceptance_state: string;
+  delegated_by: string;
+  delegated_by_identity_id?: string;
+  offered_to_agent_id: string;
+  offered_to_identity_id?: string;
+  responsible_agent_id: string | null;
+  responsible_identity_id?: string;
+  point_of_contact_agent_id: string;
+  point_of_contact_identity_id?: string;
+  priority: TaskPriority;
+  response_reason: string | null;
+  deferred_until: string | null;
+  lease_until: string | null;
+  updated_at: string;
+}
+
 interface AgentSessionState extends StoredRoomSession {
   room_id: string;
 }
@@ -75,6 +109,10 @@ interface WsMessage {
     | "message"
     | "event"
     | "info"
+    | "task_offer"
+    | "task_accept"
+    | "task_reject"
+    | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
     | "capability_remove";
@@ -120,6 +158,8 @@ export default {
           capability_agent: "GET /capabilities/:room_id/agents/:agent_id?token=<token>",
           capability_skills: "GET /capabilities/:room_id/skills?token=<token>",
           capability_skill: "GET /capabilities/:room_id/skills/:skill_id?token=<token>",
+          task_list: "GET /tasks/:room_id?token=<token>",
+          task_get: "GET /tasks/:room_id/:task_id?token=<token>",
         },
       }, { headers: corsHeaders });
     }
@@ -210,6 +250,45 @@ export default {
       });
     }
 
+    const taskMatch = path.match(/^\/tasks\/([A-Z0-9]{6})(?:\/([^/]+))?$/i);
+    if (taskMatch && request.method === "GET") {
+      const room_id = taskMatch[1].toUpperCase();
+      const taskId = taskMatch[2]
+        ? decodeURIComponent(taskMatch[2])
+        : undefined;
+      const token = url.searchParams.get("token") || "";
+
+      const registry = env.AGENTLINK_REGISTRY.get(
+        env.AGENTLINK_REGISTRY.idFromName("global"),
+      );
+      const checkResp = await registry.fetch(new Request(
+        `http://internal/check?room_id=${room_id}&token=${encodeURIComponent(token)}`,
+      ));
+      const check = await checkResp.json() as { ok: boolean; error?: string };
+
+      if (!check.ok) {
+        return Response.json(
+          { success: false, error: check.error || "Unauthorized" },
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const roomDO = env.AGENTLINK_ROOM.get(
+        env.AGENTLINK_ROOM.idFromName(room_id),
+      );
+      const internalPath = taskId
+        ? `http://internal/tasks/${encodeURIComponent(taskId)}?room_id=${room_id}`
+        : `http://internal/tasks?room_id=${room_id}`;
+      const roomResp = await roomDO.fetch(new Request(internalPath));
+      return new Response(await roomResp.text(), {
+        status: roomResp.status,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": roomResp.headers.get("Content-Type") ?? "application/json",
+        },
+      });
+    }
+
     // ── WS /connect/:room_id ── join room via WebSocket
     const wsMatch = path.match(/^\/connect\/([A-Z0-9]{6})$/i);
     if (wsMatch) {
@@ -269,6 +348,11 @@ export class AgentLinkRoom extends DurableObject {
       const now = new Date().toISOString();
       await this.ensureActiveSessionsHydrated(now);
       return this.handleCapabilityRequest(url);
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/tasks")) {
+      const now = new Date().toISOString();
+      await this.ensureActiveSessionsHydrated(now);
+      return this.handleTaskRequest(url);
     }
 
     const upgradeHeader = request.headers.get("Upgrade");
@@ -474,6 +558,233 @@ export class AgentLinkRoom extends DurableObject {
         messageId: payload.message_id,
         sequence: payload.sequence,
         broadcast: true,
+      })));
+      return;
+    }
+
+    if (msg.type === "task_offer") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const title = typeof msg.title === "string" ? msg.title.trim() : "";
+      if (!title || title.length > 140) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: "title task wajib diisi dan maksimal 140 karakter.",
+          request_id: requestId,
+          code: "invalid_task_title",
+        }));
+        return;
+      }
+      const targetAgentId = typeof msg.to_agent_id === "string" ? msg.to_agent_id : "";
+      if (!targetAgentId) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: "to_agent_id wajib diisi untuk delegation offer.",
+          request_id: requestId,
+          code: "missing_task_target",
+        }));
+        return;
+      }
+      const targetState = this.findActiveAgentById(targetAgentId);
+      if (!targetState) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: `Agent tujuan '${targetAgentId}' tidak sedang aktif di room ini.`,
+          request_id: requestId,
+          code: "task_target_not_active",
+        }));
+        return;
+      }
+      if (!targetState.stable_agent_identity_id) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: `Agent tujuan '${targetAgentId}' belum punya stable identity.`,
+          request_id: requestId,
+          code: "task_target_missing_identity",
+        }));
+        return;
+      }
+
+      const pointOfContactAgentId =
+        typeof msg.point_of_contact_agent_id === "string" && msg.point_of_contact_agent_id
+          ? msg.point_of_contact_agent_id
+          : agentId;
+      const pointOfContactState =
+        pointOfContactAgentId === agentId
+          ? agentState
+          : this.findActiveAgentById(pointOfContactAgentId);
+      if (!pointOfContactState) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: `point_of_contact_agent_id '${pointOfContactAgentId}' tidak aktif di room ini.`,
+          request_id: requestId,
+          code: "task_invalid_point_of_contact",
+        }));
+        return;
+      }
+
+      const priority: TaskPriority =
+        msg.priority === "low" || msg.priority === "high" || msg.priority === "normal"
+          ? msg.priority
+          : "normal";
+      const taskId =
+        typeof msg.task_id === "string" && msg.task_id.trim()
+          ? msg.task_id.trim()
+          : `TASK_${generateId(10)}`;
+      const manifest = await this.loadTaskRegistryManifest(timestamp);
+      const { changed, task } = createDelegationOffer(manifest, {
+        taskId,
+        title,
+        delegatedBy: agentId,
+        delegatedByIdentityId: agentState.stable_agent_identity_id,
+        offeredToAgentId: targetState.agent_id,
+        offeredToIdentityId: targetState.stable_agent_identity_id,
+        pointOfContactAgentId: pointOfContactState.agent_id,
+        pointOfContactIdentityId: pointOfContactState.stable_agent_identity_id,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        priority,
+      });
+      if (changed) {
+        await this.ctx.storage.put(ROOM_TASK_REGISTRY_KEY, manifest);
+      }
+      const sequence = changed ? await this.nextSequence() : undefined;
+      if (sequence !== undefined) {
+        this.broadcast(ws, JSON.stringify(createRoomEvent({
+          roomId,
+          sequence,
+          timestamp,
+          event: "task_offered",
+          agentId,
+          stableAgentIdentityId: agentState.stable_agent_identity_id,
+          name,
+          taskId: task.task_id,
+          task: this.toTaskEventPayload(task),
+        })));
+      }
+      ws.send(JSON.stringify(createAck({
+        action: "task_offer",
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+        sequence,
+        taskId: task.task_id,
+      })));
+      return;
+    }
+
+    if (msg.type === "task_accept" || msg.type === "task_reject" || msg.type === "task_defer") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const taskId = typeof msg.task_id === "string" ? msg.task_id.trim() : "";
+      if (!taskId) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: "task_id wajib diisi.",
+          request_id: requestId,
+          code: "missing_task_id",
+        }));
+        return;
+      }
+
+      const manifest = await this.loadTaskRegistryManifest(timestamp);
+      const reason =
+        typeof msg.reason === "string" && msg.reason.trim()
+          ? msg.reason.trim().slice(0, 240)
+          : undefined;
+      if (
+        msg.type === "task_defer"
+        && msg.deferred_until !== undefined
+        && (
+          typeof msg.deferred_until !== "string"
+          || Number.isNaN(Date.parse(msg.deferred_until))
+        )
+      ) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: "deferred_until harus berupa waktu ISO-8601 yang valid.",
+          request_id: requestId,
+          code: "invalid_task_deferred_until",
+        }));
+        return;
+      }
+      const deferUntil =
+        typeof msg.deferred_until === "string" && !Number.isNaN(Date.parse(msg.deferred_until))
+          ? msg.deferred_until
+          : null;
+
+      const result =
+        msg.type === "task_accept"
+          ? acceptDelegationOffer(manifest, {
+            taskId,
+            actorAgentId: agentId,
+            actorIdentityId: agentState.stable_agent_identity_id,
+            updatedAt: timestamp,
+            leaseUntil: new Date(Date.parse(timestamp) + 60 * 60 * 1000).toISOString(),
+          })
+          : msg.type === "task_reject"
+            ? rejectDelegationOffer(manifest, {
+              taskId,
+              actorAgentId: agentId,
+              actorIdentityId: agentState.stable_agent_identity_id,
+              updatedAt: timestamp,
+              reason,
+            })
+            : deferDelegationOffer(manifest, {
+              taskId,
+              actorAgentId: agentId,
+              actorIdentityId: agentState.stable_agent_identity_id,
+              updatedAt: timestamp,
+              deferredUntil: deferUntil,
+              reason,
+            });
+
+      if (result.error || !result.task) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: result.error || "Gagal memutakhirkan delegation task.",
+          request_id: requestId,
+          code: `task_${msg.type}_failed`,
+        }));
+        return;
+      }
+
+      if (result.changed) {
+        await this.ctx.storage.put(ROOM_TASK_REGISTRY_KEY, manifest);
+      }
+      const eventName =
+        msg.type === "task_accept"
+          ? "task_accepted"
+          : msg.type === "task_reject"
+            ? "task_rejected"
+            : "task_deferred";
+      const sequence = result.changed ? await this.nextSequence() : undefined;
+      if (sequence !== undefined) {
+        this.broadcast(ws, JSON.stringify(createRoomEvent({
+          roomId,
+          sequence,
+          timestamp,
+          event: eventName,
+          agentId,
+          stableAgentIdentityId: agentState.stable_agent_identity_id,
+          name,
+          taskId: result.task.task_id,
+          task: this.toTaskEventPayload(result.task),
+        })));
+      }
+      ws.send(JSON.stringify(createAck({
+        action: msg.type,
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+        sequence,
+        taskId: result.task.task_id,
       })));
       return;
     }
@@ -713,6 +1024,16 @@ export class AgentLinkRoom extends DurableObject {
     return [...snapshots.values()];
   }
 
+  private findActiveAgentById(agentId: string): AgentSessionState | null {
+    for (const ws of this.ctx.getWebSockets()) {
+      const state = this.readAgentState(ws);
+      if (state.agent_id === agentId) {
+        return state;
+      }
+    }
+    return null;
+  }
+
   private hasActiveSession(sessionId: string, excludedWs: WebSocket): boolean {
     return this.findActiveSession(sessionId, excludedWs) !== null;
   }
@@ -753,6 +1074,38 @@ export class AgentLinkRoom extends DurableObject {
       ROOM_CAPABILITY_REGISTRY_KEY,
     );
     return createCapabilityRegistryManifest(stored, now);
+  }
+
+  private async loadTaskRegistryManifest(
+    now = new Date().toISOString(),
+  ): Promise<TaskRegistryManifest> {
+    const stored = await this.ctx.storage.get<TaskRegistryManifest>(
+      ROOM_TASK_REGISTRY_KEY,
+    );
+    return createTaskRegistryManifest(stored, now);
+  }
+
+  private toTaskEventPayload(task: StoredTaskManifest): TaskEventPayload {
+    return {
+      task_id: task.task_id,
+      title: task.title,
+      status: task.status,
+      offer_state: task.offer_state,
+      acceptance_state: task.acceptance_state,
+      delegated_by: task.delegated_by,
+      delegated_by_identity_id: task.delegated_by_identity_id,
+      offered_to_agent_id: task.offered_to_agent_id,
+      offered_to_identity_id: task.offered_to_identity_id,
+      responsible_agent_id: task.responsible_agent_id,
+      responsible_identity_id: task.responsible_identity_id,
+      point_of_contact_agent_id: task.point_of_contact_agent_id,
+      point_of_contact_identity_id: task.point_of_contact_identity_id,
+      priority: task.priority,
+      response_reason: task.response_reason,
+      deferred_until: task.deferred_until,
+      lease_until: task.lease_until,
+      updated_at: task.updated_at,
+    };
   }
 
   private listCapabilityPresenceOverlays(): CapabilityPresenceOverlay[] {
@@ -946,6 +1299,39 @@ export class AgentLinkRoom extends DurableObject {
 
     manifest.updated_at = now;
     await this.ctx.storage.put(ROOM_SESSION_CHECKPOINTS_KEY, manifest);
+  }
+
+  private async handleTaskRequest(url: URL): Promise<Response> {
+    const manifest = await this.loadTaskRegistryManifest();
+    const segments = url.pathname.split("/").filter(Boolean);
+    const taskId = segments[1] ? decodeURIComponent(segments[1]) : undefined;
+    const roomId = url.searchParams.get("room_id") || "unknown";
+
+    if (!taskId) {
+      const tasks = listTasks(manifest);
+      return Response.json({
+        success: true,
+        room_id: roomId,
+        updated_at: manifest.updated_at,
+        count: tasks.length,
+        tasks,
+      });
+    }
+
+    const task = getTask(manifest, taskId);
+    if (!task) {
+      return Response.json(
+        { success: false, error: `Task '${taskId}' tidak ditemukan.` },
+        { status: 404 },
+      );
+    }
+
+    return Response.json({
+      success: true,
+      room_id: roomId,
+      updated_at: manifest.updated_at,
+      task,
+    });
   }
 
   private async handleCapabilityRequest(url: URL): Promise<Response> {

@@ -59,6 +59,12 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `capability_upsert_self`
 - `capability_set_availability`
 - `capability_remove_self`
+- `task_offer`
+- `task_accept`
+- `task_reject`
+- `task_defer`
+- `task_list`
+- `task_get`
 - `agent_send`
 - `agent_broadcast`
 - `agent_read_inbox`
@@ -71,10 +77,16 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `ssyubix://rooms/{room_id}/agents/{agent_id}`
 - `ssyubix://rooms/{room_id}/skills`
 - `ssyubix://rooms/{room_id}/skills/{skill_id}`
+- `ssyubix://rooms/{room_id}/tasks`
+- `ssyubix://rooms/{room_id}/tasks/{task_id}`
 
 Capability resources are backed by the Cloudflare room registry so they stay
 synced across devices. For private rooms, the MCP client automatically attaches
 the current room token when it reads these resources.
+
+Task resources expose compact delegation manifests so agents can negotiate
+`offer`, `accept`, `reject`, and `defer` states without copying heavy work
+artifacts into Cloudflare.
 
 ## Available Prompts
 
