@@ -9,6 +9,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 ### Added
 
 - Added task manifest architecture documentation for keeping Cloudflare task state metadata-first with external artifact references
+- Added connector-aware artifact accessibility documentation for classifying external references as team-readable, partial, or agent-only
 
 ## [2.2.0] - 2026-03-09
 
