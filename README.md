@@ -100,6 +100,10 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - [`docs/local-first-hibernation-strategy.md`](docs/local-first-hibernation-strategy.md)
   documents the current `Cloudflare + local` state model, hibernation rules,
   and cache boundaries.
+- [`docs/task-manifests-external-artifacts.md`](docs/task-manifests-external-artifacts.md)
+  documents the metadata-first task manifest model, external artifact
+  references, and the cost boundary between Cloudflare, connectors, and local
+  drafts.
 - [`docs/readme-first.md`](docs/readme-first.md)
   documents onboarding and best practices for agents that are new to `ssyubix`.
 
