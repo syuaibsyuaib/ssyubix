@@ -23,6 +23,7 @@ export interface CapabilitySkill {
 
 export interface StoredCapabilityProfile {
   agent_id: string;
+  stable_agent_identity_id?: string;
   display_name: string;
   summary: string;
   version: string;
@@ -50,6 +51,7 @@ export interface CapabilityPresenceOverlay extends AgentPresenceSnapshot {
 
 export interface CapabilitySkillIndexAgent {
   agent_id: string;
+  stable_agent_identity_id?: string;
   display_name: string;
   presence: "online" | "offline";
   availability: CapabilityAvailability;
@@ -290,6 +292,7 @@ function normalizeProfile(
   existing: Partial<StoredCapabilityProfile> | undefined,
   params: {
     agentId: string;
+    stableAgentIdentityId?: string;
     displayName: string;
     presence: "online" | "offline";
     joinedAt: string;
@@ -301,6 +304,11 @@ function normalizeProfile(
 
   return {
     agent_id: params.agentId,
+    stable_agent_identity_id:
+      sanitizeString(
+        params.stableAgentIdentityId,
+        sanitizeString(previous.stable_agent_identity_id),
+      ) || undefined,
     display_name: sanitizeString(params.displayName, sanitizeString(previous.display_name, params.agentId)),
     summary: sanitizeString(previous.summary),
     version: sanitizeString(previous.version, "1"),
@@ -348,6 +356,7 @@ export function upsertCapabilityProfile(
   manifest: CapabilityRegistryManifest,
   params: {
     agentId: string;
+    stableAgentIdentityId?: string;
     displayName: string;
     presence: "online" | "offline";
     joinedAt: string;
@@ -535,6 +544,7 @@ export function applyCapabilityProfilePatch(
   manifest: CapabilityRegistryManifest,
   params: {
     agentId: string;
+    stableAgentIdentityId?: string;
     displayName: string;
     presence: "online" | "offline";
     joinedAt: string;
@@ -545,6 +555,7 @@ export function applyCapabilityProfilePatch(
 ): { changed: boolean; profile: StoredCapabilityProfile } {
   const baseProfile = normalizeProfile(manifest.profiles[params.agentId], {
     agentId: params.agentId,
+    stableAgentIdentityId: params.stableAgentIdentityId,
     displayName: params.displayName,
     presence: params.presence,
     joinedAt: params.joinedAt,
@@ -604,6 +615,10 @@ function overlayCapabilityProfile(
 
   return {
     ...profile,
+    stable_agent_identity_id: sanitizeString(
+      overlay.stable_agent_identity_id,
+      profile.stable_agent_identity_id ?? "",
+    ) || undefined,
     display_name: sanitizeString(overlay.name, profile.display_name),
     presence: overlay.presence,
     joined_at: sanitizeString(overlay.joined_at, profile.joined_at),
@@ -637,6 +652,7 @@ export function listCapabilityProfiles(
       overlay.agent_id,
       normalizeProfile(undefined, {
         agentId: overlay.agent_id,
+        stableAgentIdentityId: overlay.stable_agent_identity_id,
         displayName: overlay.name,
         presence: overlay.presence,
         joinedAt: overlay.joined_at,
@@ -676,6 +692,7 @@ export function buildCapabilitySkillIndex(
 
       existing.agents.push({
         agent_id: profile.agent_id,
+        stable_agent_identity_id: profile.stable_agent_identity_id,
         display_name: profile.display_name,
         presence: profile.presence,
         availability: profile.availability,

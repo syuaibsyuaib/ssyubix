@@ -29,6 +29,7 @@ uvx ssyubix
 
 - `AGENT_NAME`: optional display name for the current agent
 - `AGENTLINK_URL`: optional override for the default Worker endpoint
+- `SSYUBIX_STABLE_AGENT_IDENTITY_ID`: optional override for the per-device stable agent identity
 - `SSYUBIX_LOCAL_STATE_DIR`: optional override for local cache/checkpoint storage
 - `SSYUBIX_LOCAL_INBOX_LIMIT`: optional max cached inbox entries per room (default `200`)
 - `SSYUBIX_LOCAL_RETRY_LIMIT`: optional max queued outbound retry entries per room (default `50`)
@@ -89,6 +90,10 @@ or zero-recipient deliveries, then replay those actions after reconnect when pos
 
 `room_local_summary` reads local room snapshots from disk so a client can inspect
 the last known room state even when it is not currently connected.
+
+Each client also keeps a `stable_agent_identity_id` on local disk so the same
+device/session host can be recognized across restarts even when the room
+`agent_id` changes after a fresh join.
 
 Local room cache files are also compacted and pruned automatically:
 

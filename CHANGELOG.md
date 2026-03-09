@@ -11,6 +11,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Added task manifest architecture documentation for keeping Cloudflare task state metadata-first with external artifact references
 - Added connector-aware artifact accessibility documentation for classifying external references as team-readable, partial, or agent-only
 - Added task field classification documentation for separating cloud-synced, external-reference, and local-draft task data
+- Added a local `stable_agent_identity_id` for the Python MCP client and propagated it through room presence, events, and capability resources
 
 ## [2.2.0] - 2026-03-09
 

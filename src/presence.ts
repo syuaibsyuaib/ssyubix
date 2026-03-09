@@ -9,6 +9,7 @@ export const TRANSIENT_CHECKPOINT_BATCH_DELAY_SECONDS = 5;
 
 export interface AgentPresenceSnapshot {
   agent_id: string;
+  stable_agent_identity_id?: string;
   name: string;
   joined_at: string;
   last_seen_at: string;
@@ -134,6 +135,7 @@ export function shouldResumeSession(params: {
 
 export function toPresenceSnapshot(state: {
   agent_id: string;
+  stable_agent_identity_id?: string;
   name: string;
   joined_at: string;
   last_seen_at: string;
@@ -141,6 +143,7 @@ export function toPresenceSnapshot(state: {
 }): AgentPresenceSnapshot {
   return {
     agent_id: state.agent_id,
+    stable_agent_identity_id: state.stable_agent_identity_id,
     name: state.name,
     joined_at: state.joined_at,
     last_seen_at: state.last_seen_at,

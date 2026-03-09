@@ -44,6 +44,7 @@ Optional environment variables:
 
 - `AGENT_NAME` sets the local agent name shown to peers
 - `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
+- `SSYUBIX_STABLE_AGENT_IDENTITY_ID` overrides the per-device stable identity if you need to pin it explicitly
 
 ## Available MCP Tools
 

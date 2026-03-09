@@ -9,6 +9,7 @@ import json
 import uuid
 import os
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,6 +48,7 @@ LOCAL_CORRUPT_CACHE_LIMIT = max(1, int(os.environ.get("SSYUBIX_LOCAL_CORRUPT_CAC
 agent_id: Optional[str]     = None
 agent_name: str              = AGENT_NAME
 client_session_id: str       = os.environ.get("AGENT_SESSION_ID", uuid.uuid4().hex)
+stable_agent_identity_id: str = ""
 current_room: Optional[dict] = None
 ws_conn: Optional[Any]       = None
 inbox: list                  = []
@@ -91,8 +93,23 @@ def _room_cache_dir() -> Path:
     return local_state_dir / "rooms" / _server_cache_key()
 
 
+def _client_identity_path() -> Path:
+    return local_state_dir / "client" / _server_cache_key() / "identity.json"
+
+
 def _corrupt_cache_dir() -> Path:
     return local_state_dir / "corrupt" / _server_cache_key()
+
+
+def _sanitize_stable_agent_identity_id(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > 128:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", normalized):
+        return None
+    return normalized
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -186,6 +203,11 @@ def _sanitize_peer_snapshot(peer: Any) -> Optional[dict]:
         return None
     return {
         "agent_id": agent_id_value,
+        "stable_agent_identity_id": (
+            peer.get("stable_agent_identity_id")
+            if isinstance(peer.get("stable_agent_identity_id"), str)
+            else None
+        ),
         "name": peer.get("name") if isinstance(peer.get("name"), str) else None,
         "presence": peer.get("presence") if isinstance(peer.get("presence"), str) else None,
         "joined_at": peer.get("joined_at") if isinstance(peer.get("joined_at"), str) else None,
@@ -343,6 +365,49 @@ def _write_json_file(path: Path, payload: dict):
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temp_path.replace(path)
+
+
+def _persist_stable_agent_identity_id(value: str):
+    _write_json_file(_client_identity_path(), {
+        "version": LOCAL_STATE_VERSION,
+        "stable_agent_identity_id": value,
+        "updated_at": _now_iso(),
+    })
+
+
+def _load_or_create_stable_agent_identity_id() -> str:
+    override = _sanitize_stable_agent_identity_id(
+        os.environ.get("SSYUBIX_STABLE_AGENT_IDENTITY_ID"),
+    )
+    if override:
+        try:
+            _persist_stable_agent_identity_id(override)
+        except Exception as exc:
+            logger.warning("Stable identity override persistence failed: %s", exc)
+        return override
+
+    identity_path = _client_identity_path()
+    if identity_path.exists():
+        try:
+            payload = json.loads(identity_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Stable identity cache read failed for %s: %s", identity_path, exc)
+        else:
+            cached = _sanitize_stable_agent_identity_id(
+                payload.get("stable_agent_identity_id"),
+            )
+            if cached:
+                return cached
+
+    generated = uuid.uuid4().hex
+    try:
+        _persist_stable_agent_identity_id(generated)
+    except Exception as exc:
+        logger.warning("Stable identity cache write failed: %s", exc)
+    return generated
+
+
+stable_agent_identity_id = _load_or_create_stable_agent_identity_id()
 
 
 def _empty_local_room_state(
@@ -722,14 +787,18 @@ def _room_peers() -> dict:
     current_room["peers"] = {}
     return current_room["peers"]
 
-def _set_peer_state(agent_id_value: Optional[str], *, name: Optional[str], presence: str,
-    joined_at: Optional[str], last_seen_at: Optional[str]):
+def _set_peer_state(agent_id_value: Optional[str], *, stable_agent_identity_id: Optional[str],
+    name: Optional[str], presence: str, joined_at: Optional[str], last_seen_at: Optional[str]):
     if not agent_id_value:
         return
     peers = _room_peers()
     existing = peers.get(agent_id_value, {})
     peers[agent_id_value] = {
         "agent_id": agent_id_value,
+        "stable_agent_identity_id": (
+            stable_agent_identity_id
+            or existing.get("stable_agent_identity_id")
+        ),
         "name": name or existing.get("name"),
         "presence": presence,
         "joined_at": joined_at or existing.get("joined_at"),
@@ -861,7 +930,11 @@ def _schedule_retry_replay(delay: float = 0.0):
     retry_replay_task = loop.create_task(_replay_retry_queue(delay=delay))
 
 async def _open_room_connection(rid: str, token: Optional[str]) -> tuple[Any, dict]:
-    query = {"name": agent_name, "session_id": client_session_id}
+    query = {
+        "name": agent_name,
+        "session_id": client_session_id,
+        "stable_agent_identity_id": stable_agent_identity_id,
+    }
     if token:
         query["token"] = token
     qs = urlencode(query)
@@ -881,9 +954,18 @@ async def _open_room_connection(rid: str, token: Optional[str]) -> tuple[Any, di
     return conn, welcome
 
 async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = False) -> dict:
-    global ws_conn, current_room, agent_id, room_credentials
+    global ws_conn, current_room, agent_id, room_credentials, stable_agent_identity_id
     conn, welcome = await _open_room_connection(rid, token)
     agent_id = welcome.get("agent_id", agent_id)
+    welcome_stable_identity_id = _sanitize_stable_agent_identity_id(
+        welcome.get("stable_agent_identity_id"),
+    )
+    if welcome_stable_identity_id:
+        stable_agent_identity_id = welcome_stable_identity_id
+        try:
+            _persist_stable_agent_identity_id(stable_agent_identity_id)
+        except Exception as exc:
+            logger.warning("Stable identity cache write failed after welcome: %s", exc)
     peers = {}
     for peer in welcome.get("agents", []):
         peer_agent_id = peer.get("agent_id")
@@ -895,6 +977,7 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
         "joined_at": welcome.get("joined_at"),
         "last_seen_at": welcome.get("last_seen_at"),
         "presence": welcome.get("presence", "online"),
+        "stable_agent_identity_id": stable_agent_identity_id,
         "session_resumed": welcome.get("session_resumed", False),
         "heartbeat_interval_seconds": welcome.get("heartbeat_interval_seconds", 30),
         "heartbeat_timeout_seconds": welcome.get("heartbeat_timeout_seconds", 90),
@@ -1055,15 +1138,25 @@ async def ws_listen():
         await asyncio.sleep(2)
 
 def _handle_incoming(msg: dict):
-    global agent_id
+    global agent_id, stable_agent_identity_id
     t = msg.get("type")
     if t == "welcome":
         agent_id = msg.get("agent_id", agent_id)
+        welcome_stable_identity_id = _sanitize_stable_agent_identity_id(
+            msg.get("stable_agent_identity_id"),
+        )
+        if welcome_stable_identity_id:
+            stable_agent_identity_id = welcome_stable_identity_id
+            try:
+                _persist_stable_agent_identity_id(stable_agent_identity_id)
+            except Exception as exc:
+                logger.warning("Stable identity cache write failed during welcome: %s", exc)
         if current_room is not None:
             current_room["last_sequence"] = msg.get("last_sequence", current_room.get("last_sequence", 0))
             current_room["joined_at"] = msg.get("joined_at", current_room.get("joined_at"))
             current_room["last_seen_at"] = msg.get("last_seen_at", current_room.get("last_seen_at"))
             current_room["presence"] = msg.get("presence", current_room.get("presence", "online"))
+            current_room["stable_agent_identity_id"] = stable_agent_identity_id
             current_room["session_resumed"] = msg.get("session_resumed", current_room.get("session_resumed", False))
             current_room["heartbeat_interval_seconds"] = msg.get("heartbeat_interval_seconds", current_room.get("heartbeat_interval_seconds", 30))
             current_room["heartbeat_timeout_seconds"] = msg.get("heartbeat_timeout_seconds", current_room.get("heartbeat_timeout_seconds", 90))
@@ -1081,6 +1174,7 @@ def _handle_incoming(msg: dict):
         for peer in msg.get("agents", []):
             _append_inbox_entry({"type": "event", "event": "agent_online",
                 "from": peer.get("name"), "agent_id": peer.get("agent_id"),
+                "stable_agent_identity_id": peer.get("stable_agent_identity_id"),
                 "presence": peer.get("presence", "online"),
                 "joined_at": peer.get("joined_at"),
                 "last_seen_at": peer.get("last_seen_at"),
@@ -1100,7 +1194,9 @@ def _handle_incoming(msg: dict):
         event_name = msg.get("event")
         event_agent_id = msg.get("agent_id")
         if event_name in {"agent_joined", "agent_reconnected"}:
-            _set_peer_state(event_agent_id, name=msg.get("name"),
+            _set_peer_state(event_agent_id,
+                stable_agent_identity_id=msg.get("stable_agent_identity_id"),
+                name=msg.get("name"),
                 presence=msg.get("presence", "online"), joined_at=msg.get("joined_at"),
                 last_seen_at=msg.get("last_seen_at"))
             _schedule_retry_replay(delay=0.5)
@@ -1108,6 +1204,7 @@ def _handle_incoming(msg: dict):
             _remove_peer_state(event_agent_id)
         _append_inbox_entry({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
+            "stable_agent_identity_id": msg.get("stable_agent_identity_id"),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
             "room_id": msg.get("room_id"),
             "presence": msg.get("presence"),
@@ -1501,6 +1598,7 @@ async def agent_register(params: RegisterInput) -> str:
     if params.name:
         agent_name = params.name
     return json.dumps({"success": True, "name": agent_name, "server": AGENTLINK_URL,
+        "stable_agent_identity_id": stable_agent_identity_id,
         "message": f"Agent '{agent_name}' siap. Sekarang bisa create/join room."}, indent=2)
 
 
@@ -1556,6 +1654,7 @@ async def room_join(params: JoinRoomInput) -> str:
         existing = welcome.get("agents", [])
 
         return json.dumps({"success": True, "room_id": rid, "my_agent_id": agent_id,
+            "stable_agent_identity_id": stable_agent_identity_id,
             "agents": existing, "agent_count": len(existing) + 1,
             "session_resumed": current_room.get("session_resumed", False) if current_room else False,
             "heartbeat_interval_seconds": current_room.get("heartbeat_interval_seconds") if current_room else None,
@@ -1627,7 +1726,9 @@ async def room_info() -> str:
     current_room["local_retry_queue_count"] = len(_retry_queue())
     _persist_local_room_state()
     return json.dumps({"success": True, "room": current_room,
-        "my_agent_id": agent_id, "connected": ws_conn is not None}, indent=2)
+        "my_agent_id": agent_id,
+        "stable_agent_identity_id": stable_agent_identity_id,
+        "connected": ws_conn is not None}, indent=2)
 
 
 @mcp.tool(name="room_local_summary")
@@ -1824,6 +1925,7 @@ async def agent_list() -> str:
     """
     return json.dumps({"my_agent_id": agent_id, "my_name": agent_name,
         "client_session_id": client_session_id,
+        "stable_agent_identity_id": stable_agent_identity_id,
         "current_room": current_room, "connected": ws_conn is not None,
         "local_retry_queue_count": len(_retry_queue()) if current_room else 0,
         "server": AGENTLINK_URL}, indent=2)

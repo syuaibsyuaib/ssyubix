@@ -18,6 +18,7 @@ export interface RoomEventPayload extends SequencedRoomPayload {
   type: "event";
   event: string;
   agent_id: string;
+  stable_agent_identity_id?: string;
   name: string;
   presence?: "online" | "offline";
   joined_at?: string;
@@ -79,6 +80,7 @@ export function createRoomEvent(params: {
   timestamp: string;
   event: string;
   agentId: string;
+  stableAgentIdentityId?: string;
   name: string;
   presence?: "online" | "offline";
   joinedAt?: string;
@@ -93,6 +95,7 @@ export function createRoomEvent(params: {
     timestamp: params.timestamp,
     event: params.event,
     agent_id: params.agentId,
+    stable_agent_identity_id: params.stableAgentIdentityId,
     name: params.name,
     presence: params.presence,
     joined_at: params.joinedAt,

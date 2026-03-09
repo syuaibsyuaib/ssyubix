@@ -16,6 +16,7 @@ test("upsertCapabilityProfile creates a default self-declared profile", () => {
 
   const { changed, profile } = upsertCapabilityProfile(manifest, {
     agentId: "AGENT42",
+    stableAgentIdentityId: "stable-agent-42",
     displayName: "alpha-agent",
     presence: "online",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -26,6 +27,7 @@ test("upsertCapabilityProfile creates a default self-declared profile", () => {
   assert.equal(changed, true);
   assert.deepEqual(profile, {
     agent_id: "AGENT42",
+    stable_agent_identity_id: "stable-agent-42",
     display_name: "alpha-agent",
     summary: "",
     version: "1",
@@ -50,6 +52,7 @@ test("upsertCapabilityProfile preserves custom fields while refreshing room pres
       profiles: {
         AGENT42: {
           agent_id: "AGENT42",
+          stable_agent_identity_id: "stable-agent-42",
           display_name: "alpha-agent",
           summary: "Code reviewer",
           version: "1",
@@ -82,6 +85,7 @@ test("upsertCapabilityProfile preserves custom fields while refreshing room pres
 
   const { profile } = upsertCapabilityProfile(manifest, {
     agentId: "AGENT42",
+    stableAgentIdentityId: "stable-agent-42",
     displayName: "alpha-agent-v2",
     presence: "online",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -102,6 +106,7 @@ test("listCapabilityProfiles overlays active socket presence and includes live-o
   const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
   upsertCapabilityProfile(manifest, {
     agentId: "AGENT1",
+    stableAgentIdentityId: "stable-agent-1",
     displayName: "alpha",
     presence: "offline",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -112,6 +117,7 @@ test("listCapabilityProfiles overlays active socket presence and includes live-o
   const profiles = listCapabilityProfiles(manifest, [
     {
       agent_id: "AGENT1",
+      stable_agent_identity_id: "stable-agent-1",
       name: "alpha-live",
       presence: "online",
       joined_at: "2026-03-09T00:00:00.000Z",
@@ -119,6 +125,7 @@ test("listCapabilityProfiles overlays active socket presence and includes live-o
     },
     {
       agent_id: "AGENT2",
+      stable_agent_identity_id: "stable-agent-2",
       name: "beta-live",
       presence: "online",
       joined_at: "2026-03-09T00:00:30.000Z",
@@ -129,17 +136,20 @@ test("listCapabilityProfiles overlays active socket presence and includes live-o
   assert.deepEqual(
     profiles.map((profile) => ({
       agent_id: profile.agent_id,
+      stable_agent_identity_id: profile.stable_agent_identity_id,
       display_name: profile.display_name,
       presence: profile.presence,
     })),
     [
       {
         agent_id: "AGENT1",
+        stable_agent_identity_id: "stable-agent-1",
         display_name: "alpha-live",
         presence: "online",
       },
       {
         agent_id: "AGENT2",
+        stable_agent_identity_id: "stable-agent-2",
         display_name: "beta-live",
         presence: "online",
       },
@@ -151,6 +161,7 @@ test("buildCapabilitySkillIndex groups agents by declared skill", () => {
   const profiles = [
     {
       agent_id: "AGENT1",
+      stable_agent_identity_id: "stable-agent-1",
       display_name: "alpha",
       summary: "",
       version: "1",
@@ -178,6 +189,7 @@ test("buildCapabilitySkillIndex groups agents by declared skill", () => {
     },
     {
       agent_id: "AGENT2",
+      stable_agent_identity_id: "stable-agent-2",
       display_name: "beta",
       summary: "",
       version: "1",
@@ -214,12 +226,14 @@ test("buildCapabilitySkillIndex groups agents by declared skill", () => {
       agents: [
         {
           agent_id: "AGENT1",
+          stable_agent_identity_id: "stable-agent-1",
           display_name: "alpha",
           presence: "online",
           availability: "available",
         },
         {
           agent_id: "AGENT2",
+          stable_agent_identity_id: "stable-agent-2",
           display_name: "beta",
           presence: "offline",
           availability: "busy",
@@ -301,6 +315,7 @@ test("applyCapabilityProfilePatch updates mutable capability fields without losi
   const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
   upsertCapabilityProfile(manifest, {
     agentId: "AGENT42",
+    stableAgentIdentityId: "stable-agent-42",
     displayName: "alpha-agent",
     presence: "online",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -310,6 +325,7 @@ test("applyCapabilityProfilePatch updates mutable capability fields without losi
 
   const { changed, profile } = applyCapabilityProfilePatch(manifest, {
     agentId: "AGENT42",
+    stableAgentIdentityId: "stable-agent-42",
     displayName: "alpha-agent",
     presence: "online",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -325,6 +341,7 @@ test("applyCapabilityProfilePatch updates mutable capability fields without losi
 
   assert.equal(changed, true);
   assert.equal(profile.agent_id, "AGENT42");
+  assert.equal(profile.stable_agent_identity_id, "stable-agent-42");
   assert.equal(profile.display_name, "alpha-agent");
   assert.equal(profile.availability, "busy");
   assert.equal(profile.current_load, 2);
@@ -336,6 +353,7 @@ test("removeCapabilityProfile deletes only the targeted stored profile", () => {
   const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
   upsertCapabilityProfile(manifest, {
     agentId: "AGENT42",
+    stableAgentIdentityId: "stable-agent-42",
     displayName: "alpha-agent",
     presence: "online",
     joinedAt: "2026-03-09T00:00:00.000Z",
@@ -344,6 +362,7 @@ test("removeCapabilityProfile deletes only the targeted stored profile", () => {
   });
   upsertCapabilityProfile(manifest, {
     agentId: "AGENT99",
+    stableAgentIdentityId: "stable-agent-99",
     displayName: "beta-agent",
     presence: "online",
     joinedAt: "2026-03-09T00:00:10.000Z",
