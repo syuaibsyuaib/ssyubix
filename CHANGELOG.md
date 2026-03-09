@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-03-09
+
 ### Added
 
 - Added task manifest architecture documentation for keeping Cloudflare task state metadata-first with external artifact references
