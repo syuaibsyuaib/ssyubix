@@ -131,6 +131,9 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - [`docs/room-banlist.md`](docs/room-banlist.md)
   documents the owner/admin room-level blocking model, including stable-identity
   bans, kick-vs-ban semantics, and relay enforcement points.
+- [`docs/room-token-rotation.md`](docs/room-token-rotation.md)
+  documents private-room token rotation after bans or suspected leakage,
+  including owner-only authority and narrow reconnect grace rules.
 
 ## Releases
 
