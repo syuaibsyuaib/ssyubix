@@ -125,6 +125,9 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - [`docs/room-role-model.md`](docs/room-role-model.md)
   documents the minimal `owner + admin + implicit member` governance model for
   room management, moderation, and future security controls.
+- [`docs/room-resume-context.md`](docs/room-resume-context.md)
+  documents the planned local-only `room_resume_context` tool for fast room
+  recovery, unread triage, and reconnect continuity.
 
 ## Releases
 
