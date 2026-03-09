@@ -6,6 +6,10 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+### Added
+
+- Added room role model documentation for `owner`, `admin`, and implicit member governance in `ssyubix` rooms
+
 ## [2.3.0] - 2026-03-09
 
 ### Added
