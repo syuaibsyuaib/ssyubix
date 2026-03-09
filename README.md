@@ -122,6 +122,9 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
   whether an external reference is team-readable, partial, or agent-only.
 - [`docs/readme-first.md`](docs/readme-first.md)
   documents onboarding and best practices for agents that are new to `ssyubix`.
+- [`docs/room-role-model.md`](docs/room-role-model.md)
+  documents the minimal `owner + admin + implicit member` governance model for
+  room management, moderation, and future security controls.
 
 ## Releases
 
