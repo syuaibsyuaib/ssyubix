@@ -57,6 +57,7 @@ interface RoomMeta extends StoredRoomMeta {
 
 interface AgentInfo {
   agent_id: string;
+  stable_agent_identity_id?: string;
   name: string;
   joined_at: string;
 }
@@ -215,6 +216,8 @@ export default {
       const room_id = wsMatch[1].toUpperCase();
       const agentName = url.searchParams.get("name") || `agent-${generateId(4)}`;
       const token = url.searchParams.get("token") || "";
+      const stableAgentIdentityId =
+        sanitizeStableAgentIdentityId(url.searchParams.get("stable_agent_identity_id"));
 
       // Verifikasi room ada + token valid (via registry)
       const registry = env.AGENTLINK_REGISTRY.get(
@@ -241,6 +244,9 @@ export default {
           ...Object.fromEntries(request.headers),
           "X-Agent-Name": agentName,
           "X-Room-Id": room_id,
+          ...(stableAgentIdentityId
+            ? { "X-Stable-Agent-Identity-Id": stableAgentIdentityId }
+            : {}),
         },
       });
 
@@ -272,6 +278,9 @@ export class AgentLinkRoom extends DurableObject {
 
     const agentName = request.headers.get("X-Agent-Name") || "unknown";
     const roomId    = request.headers.get("X-Room-Id") || "unknown";
+    const stableAgentIdentityId =
+      sanitizeStableAgentIdentityId(request.headers.get("X-Stable-Agent-Identity-Id")) ||
+      sanitizeStableAgentIdentityId(new URL(request.url).searchParams.get("stable_agent_identity_id"));
     const sessionId = new URL(request.url).searchParams.get("session_id") || generateId(16);
     const now = new Date().toISOString();
     await this.ensureActiveSessionsHydrated(now);
@@ -285,10 +294,17 @@ export class AgentLinkRoom extends DurableObject {
     const [client, server] = Object.values(pair);
 
     // Pakai Hibernation API
-    this.ctx.acceptWebSocket(server, [session.agentId, agentName, roomId, sessionId]);
+    this.ctx.acceptWebSocket(server, [
+      session.agentId,
+      agentName,
+      roomId,
+      sessionId,
+      stableAgentIdentityId || "",
+    ]);
     let state: AgentSessionState = {
       session_id: sessionId,
       agent_id: session.agentId,
+      stable_agent_identity_id: stableAgentIdentityId,
       name: agentName,
       room_id: roomId,
       joined_at: session.joinedAt,
@@ -316,6 +332,7 @@ export class AgentLinkRoom extends DurableObject {
     server.send(JSON.stringify({
       type: "welcome",
       agent_id: state.agent_id,
+      stable_agent_identity_id: state.stable_agent_identity_id,
       name: agentName,
       room_id: roomId,
       last_sequence: joinSequence,
@@ -341,6 +358,7 @@ export class AgentLinkRoom extends DurableObject {
       timestamp: now,
       event: eventName,
       agentId: state.agent_id,
+      stableAgentIdentityId: state.stable_agent_identity_id,
       name: agentName,
       presence: state.presence,
       joinedAt: state.joined_at,
@@ -373,6 +391,7 @@ export class AgentLinkRoom extends DurableObject {
         type: "pong",
         room_id: roomId,
         agent_id: agentId,
+        stable_agent_identity_id: agentState.stable_agent_identity_id,
         presence: agentState.presence,
         timestamp: agentState.last_seen_at,
         last_seen_at: agentState.last_seen_at,
@@ -608,6 +627,7 @@ export class AgentLinkRoom extends DurableObject {
       timestamp,
       event: "agent_left",
       agentId: state.agent_id,
+      stableAgentIdentityId: state.stable_agent_identity_id,
       name: state.name,
       presence: offlineState.presence,
       joinedAt: state.joined_at,
@@ -650,6 +670,7 @@ export class AgentLinkRoom extends DurableObject {
     return {
       session_id: tags[3] || "",
       agent_id: tags[0] || "unknown",
+      stable_agent_identity_id: tags[4] || undefined,
       name: tags[1] || "unknown",
       room_id: tags[2] || "unknown",
       joined_at: timestamp,
@@ -745,6 +766,7 @@ export class AgentLinkRoom extends DurableObject {
     const manifest = await this.loadCapabilityRegistryManifest(state.last_seen_at);
     const { changed } = upsertCapabilityProfile(manifest, {
       agentId: state.agent_id,
+      stableAgentIdentityId: state.stable_agent_identity_id,
       displayName: state.name,
       presence: state.presence,
       joinedAt: state.joined_at,
@@ -767,6 +789,7 @@ export class AgentLinkRoom extends DurableObject {
     const manifest = await this.loadCapabilityRegistryManifest(params.timestamp);
     const result = applyCapabilityProfilePatch(manifest, {
       agentId: agentState.agent_id,
+      stableAgentIdentityId: agentState.stable_agent_identity_id,
       displayName: agentState.name,
       presence: agentState.presence,
       joinedAt: agentState.joined_at,
@@ -811,6 +834,7 @@ export class AgentLinkRoom extends DurableObject {
       timestamp: params.timestamp,
       event: params.event,
       agentId: params.agentState.agent_id,
+      stableAgentIdentityId: params.agentState.stable_agent_identity_id,
       name: params.agentState.name,
       presence: params.agentState.presence,
       joinedAt: params.agentState.joined_at,
@@ -1016,6 +1040,7 @@ export class AgentLinkRoom extends DurableObject {
     return {
       session_id: state.session_id,
       agent_id: state.agent_id,
+      stable_agent_identity_id: state.stable_agent_identity_id,
       name: state.name,
       joined_at: state.joined_at,
       last_seen_at: state.last_seen_at,
@@ -1187,4 +1212,17 @@ function generateId(len: number): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   const bytes = crypto.getRandomValues(new Uint8Array(len));
   return Array.from(bytes, b => chars[b % chars.length]).join("");
+}
+
+function sanitizeStableAgentIdentityId(value: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 128) {
+    return undefined;
+  }
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(normalized)
+    ? normalized
+    : undefined;
 }

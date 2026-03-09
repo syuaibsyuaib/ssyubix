@@ -12,17 +12,20 @@ from agentlink_mcp import server
 class HandleIncomingTests(unittest.TestCase):
     def setUp(self):
         self.original_agent_id = server.agent_id
+        self.original_stable_agent_identity_id = server.stable_agent_identity_id
         self.original_inbox = list(server.inbox)
         self.original_current_room = server.current_room
         self.original_local_state_dir = server.local_state_dir
         self.tempdir = tempfile.TemporaryDirectory()
         server.local_state_dir = Path(self.tempdir.name)
+        server.stable_agent_identity_id = server._load_or_create_stable_agent_identity_id()
         server.agent_id = None
         server.current_room = {"room_id": "ROOM42", "last_sequence": 0}
         server.inbox.clear()
 
     def tearDown(self):
         server.agent_id = self.original_agent_id
+        server.stable_agent_identity_id = self.original_stable_agent_identity_id
         server.current_room = self.original_current_room
         server.inbox[:] = self.original_inbox
         server.local_state_dir = self.original_local_state_dir
@@ -39,18 +42,29 @@ class HandleIncomingTests(unittest.TestCase):
                 "presence": "online",
                 "heartbeat_interval_seconds": 30,
                 "heartbeat_timeout_seconds": 90,
-                "agents": [{"name": "peer-one", "agent_id": "PEER1234"}],
+                "stable_agent_identity_id": server.stable_agent_identity_id,
+                "agents": [{
+                    "name": "peer-one",
+                    "agent_id": "PEER1234",
+                    "stable_agent_identity_id": "stable-peer-1234",
+                }],
             }
         )
 
         self.assertEqual(server.agent_id, "LOCAL123")
+        self.assertEqual(server.current_room["stable_agent_identity_id"], server.stable_agent_identity_id)
         self.assertEqual(server.current_room["last_sequence"], 4)
         self.assertEqual(server.current_room["heartbeat_interval_seconds"], 30)
         self.assertEqual(server.current_room["heartbeat_timeout_seconds"], 90)
         self.assertIn("PEER1234", server.current_room["peers"])
+        self.assertEqual(
+            server.current_room["peers"]["PEER1234"]["stable_agent_identity_id"],
+            "stable-peer-1234",
+        )
         self.assertEqual(len(server.inbox), 1)
         self.assertEqual(server.inbox[0]["event"], "agent_online")
         self.assertEqual(server.inbox[0]["agent_id"], "PEER1234")
+        self.assertEqual(server.inbox[0]["stable_agent_identity_id"], "stable-peer-1234")
 
     def test_message_appends_message_to_inbox(self):
         server._handle_incoming(
@@ -82,6 +96,7 @@ class HandleIncomingTests(unittest.TestCase):
                 "event": "agent_joined",
                 "name": "peer-three",
                 "agent_id": "PEER9999",
+                "stable_agent_identity_id": "stable-peer-9999",
                 "message_id": "ROOM42:8",
                 "sequence": 8,
                 "room_id": "ROOM42",
@@ -98,6 +113,10 @@ class HandleIncomingTests(unittest.TestCase):
         self.assertEqual(server.inbox[0]["message_id"], "ROOM42:8")
         self.assertEqual(server.current_room["last_sequence"], 8)
         self.assertEqual(server.current_room["peers"]["PEER9999"]["presence"], "online")
+        self.assertEqual(
+            server.current_room["peers"]["PEER9999"]["stable_agent_identity_id"],
+            "stable-peer-9999",
+        )
 
     def test_agent_left_event_removes_peer_from_snapshot(self):
         server.current_room["peers"] = {
@@ -190,6 +209,7 @@ class AckHandlingTests(unittest.IsolatedAsyncioTestCase):
 class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.original_agent_id = server.agent_id
+        self.original_stable_agent_identity_id = server.stable_agent_identity_id
         self.original_inbox = list(server.inbox)
         self.original_current_room = server.current_room
         self.original_local_state_dir = server.local_state_dir
@@ -202,6 +222,7 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         self.original_corrupt_cache_limit = server.LOCAL_CORRUPT_CACHE_LIMIT
         self.tempdir = tempfile.TemporaryDirectory()
         server.local_state_dir = Path(self.tempdir.name)
+        server.stable_agent_identity_id = server._load_or_create_stable_agent_identity_id()
         server.agent_id = "LOCAL123"
         server.current_room = None
         server.ws_conn = None
@@ -211,6 +232,7 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         server.agent_id = self.original_agent_id
+        server.stable_agent_identity_id = self.original_stable_agent_identity_id
         server.current_room = self.original_current_room
         server.inbox[:] = self.original_inbox
         server.local_state_dir = self.original_local_state_dir
@@ -223,6 +245,21 @@ class LocalInboxCacheTests(unittest.IsolatedAsyncioTestCase):
         server.LOCAL_ROOM_CACHE_LIMIT = self.original_room_cache_limit
         server.LOCAL_CORRUPT_CACHE_LIMIT = self.original_corrupt_cache_limit
         self.tempdir.cleanup()
+
+    def test_stable_agent_identity_id_persists_in_local_client_state(self):
+        first = server.stable_agent_identity_id
+        self.assertTrue(first)
+        identity_path = server._client_identity_path()
+        self.assertTrue(identity_path.exists())
+
+        server.stable_agent_identity_id = ""
+        restored = server._load_or_create_stable_agent_identity_id()
+
+        self.assertEqual(restored, first)
+        self.assertEqual(
+            json.loads(identity_path.read_text(encoding="utf-8"))["stable_agent_identity_id"],
+            first,
+        )
 
     def test_persist_and_restore_local_room_cache(self):
         server.current_room = {

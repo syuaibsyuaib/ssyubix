@@ -52,6 +52,7 @@ test("toPresenceSnapshot strips session-only state", () => {
   assert.deepEqual(
     toPresenceSnapshot({
       agent_id: "AGENT42",
+      stable_agent_identity_id: "stable-agent-42",
       name: "peer-one",
       joined_at: "2026-03-08T00:00:00.000Z",
       last_seen_at: "2026-03-08T00:00:30.000Z",
@@ -59,6 +60,7 @@ test("toPresenceSnapshot strips session-only state", () => {
     }),
     {
       agent_id: "AGENT42",
+      stable_agent_identity_id: "stable-agent-42",
       name: "peer-one",
       joined_at: "2026-03-08T00:00:00.000Z",
       last_seen_at: "2026-03-08T00:00:30.000Z",
@@ -119,6 +121,7 @@ test("toHydratedPresenceState refreshes the last seen timestamp while keeping id
     toHydratedPresenceState({
       session_id: "SESSION1",
       agent_id: "AGENT42",
+      stable_agent_identity_id: "stable-agent-42",
       name: "peer-one",
       joined_at: "2026-03-09T00:00:00.000Z",
       last_seen_at: "2026-03-09T00:00:30.000Z",
@@ -128,6 +131,7 @@ test("toHydratedPresenceState refreshes the last seen timestamp while keeping id
     {
       session_id: "SESSION1",
       agent_id: "AGENT42",
+      stable_agent_identity_id: "stable-agent-42",
       name: "peer-one",
       joined_at: "2026-03-09T00:00:00.000Z",
       last_seen_at: "2026-03-09T00:01:00.000Z",
@@ -143,6 +147,7 @@ test("shouldPruneSessionCheckpoint removes stale reconnect state outside the res
       session: {
         session_id: "SESSION1",
         agent_id: "AGENT42",
+        stable_agent_identity_id: "stable-agent-42",
         name: "peer-one",
         joined_at: "2026-03-09T00:00:00.000Z",
         last_seen_at: "2026-03-09T00:00:00.000Z",
@@ -161,6 +166,7 @@ test("shouldPruneSessionCheckpoint keeps reconnect state inside the resume windo
       session: {
         session_id: "SESSION1",
         agent_id: "AGENT42",
+        stable_agent_identity_id: "stable-agent-42",
         name: "peer-one",
         joined_at: "2026-03-09T00:00:00.000Z",
         last_seen_at: "2026-03-09T00:01:30.000Z",
