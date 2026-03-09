@@ -843,7 +843,7 @@ def _cancel_retry_replay_task():
     retry_replay_task = None
 
 
-def _capability_resource_auth_params(room_id: str) -> dict[str, str]:
+def _room_resource_auth_params(room_id: str) -> dict[str, str]:
     normalized_room_id = room_id.upper()
     if (
         room_credentials is None
@@ -856,16 +856,17 @@ def _capability_resource_auth_params(room_id: str) -> dict[str, str]:
     return {}
 
 
-async def _fetch_capability_resource(room_id: str, resource_path: str) -> dict[str, Any]:
+async def _fetch_room_resource(path_prefix: str, room_id: str, resource_path: str) -> dict[str, Any]:
     if http_session is None:
         raise RuntimeError("HTTP session belum siap.")
 
     normalized_room_id = room_id.upper()
-    url = f"{AGENTLINK_URL}/capabilities/{normalized_room_id}/{resource_path}"
+    suffix = f"/{resource_path}" if resource_path else ""
+    url = f"{AGENTLINK_URL}/{path_prefix}/{normalized_room_id}{suffix}"
     status_code = 0
     async with http_session.get(
         url,
-        params=_capability_resource_auth_params(normalized_room_id),
+        params=_room_resource_auth_params(normalized_room_id),
     ) as response:
         status_code = response.status
         try:
@@ -893,6 +894,14 @@ async def _fetch_capability_resource(room_id: str, resource_path: str) -> dict[s
     }
 
 
+async def _fetch_capability_resource(room_id: str, resource_path: str) -> dict[str, Any]:
+    return await _fetch_room_resource("capabilities", room_id, resource_path)
+
+
+async def _fetch_task_resource(room_id: str, resource_path: str = "") -> dict[str, Any]:
+    return await _fetch_room_resource("tasks", room_id, resource_path)
+
+
 def _require_capability_context() -> tuple[str, str]:
     if current_room is None or not isinstance(current_room.get("room_id"), str):
         raise RuntimeError("Tidak sedang di dalam room. Jalankan room_join dulu.")
@@ -913,6 +922,17 @@ async def _fetch_self_capability_profile() -> dict[str, Any]:
     if not isinstance(agent_payload, dict):
         raise RuntimeError("Capability profile diri sendiri tidak ditemukan.")
     return payload
+
+
+def _require_task_context() -> tuple[str, str, str]:
+    room_id, self_agent_id = _require_capability_context()
+    if not stable_agent_identity_id:
+        raise RuntimeError("Stable agent identity belum tersedia.")
+    return room_id, self_agent_id, stable_agent_identity_id
+
+
+async def _fetch_task_by_id(room_id: str, task_id: str) -> dict[str, Any]:
+    return await _fetch_task_resource(room_id, quote(task_id, safe=""))
 
 
 def _schedule_retry_replay(delay: float = 0.0):
@@ -1205,6 +1225,8 @@ def _handle_incoming(msg: dict):
         _append_inbox_entry({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
             "stable_agent_identity_id": msg.get("stable_agent_identity_id"),
+            "task_id": msg.get("task_id"),
+            "task": msg.get("task"),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
             "room_id": msg.get("room_id"),
             "presence": msg.get("presence"),
@@ -1407,6 +1429,46 @@ class CapabilityAvailabilityInput(BaseModel):
     current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Perkiraan beban kerja saat ini")
 
 
+class TaskOfferInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    title: str = Field(..., min_length=1, max_length=140, description="Judul task ringkas")
+    to_agent_id: str = Field(..., min_length=1, description="Agent ID tujuan offer delegasi")
+    priority: Literal["low", "normal", "high"] = Field(default="normal", description="Prioritas task")
+    point_of_contact_agent_id: Optional[str] = Field(
+        default=None,
+        description="Agent ID yang jadi titik kontak follow-up. Default: pengirim offer.",
+    )
+
+
+class TaskTransitionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    task_id: str = Field(..., min_length=1, description="ID task yang ingin diubah status delegation-nya")
+    reason: Optional[str] = Field(default=None, max_length=240, description="Alasan ringkas reject/defer")
+
+
+class TaskLookupInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    task_id: str = Field(..., min_length=1, description="ID task yang ingin dibaca")
+
+
+class TaskDeferInput(TaskTransitionInput):
+    deferred_until: Optional[str] = Field(
+        default=None,
+        description="Hint waktu ISO-8601 kapan task bisa ditinjau ulang",
+    )
+
+    @field_validator("deferred_until")
+    @classmethod
+    def validate_deferred_until(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("deferred_until harus berupa waktu ISO-8601 yang valid.") from exc
+        return value
+
+
 @mcp.resource(
     "ssyubix://rooms/{room_id}/agents",
     name="ssyubix-room-capability-agents",
@@ -1448,6 +1510,28 @@ async def capability_skills_resource(room_id: str) -> str:
 )
 async def capability_skill_resource(room_id: str, skill_id: str) -> str:
     payload = await _fetch_capability_resource(room_id, f"skills/{quote(skill_id, safe='')}")
+    return json.dumps(payload, indent=2)
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/tasks",
+    name="ssyubix-room-tasks",
+    description="Delegation task manifest per room.",
+    mime_type="application/json",
+)
+async def room_tasks_resource(room_id: str) -> str:
+    payload = await _fetch_task_resource(room_id)
+    return json.dumps(payload, indent=2)
+
+
+@mcp.resource(
+    "ssyubix://rooms/{room_id}/tasks/{task_id}",
+    name="ssyubix-room-task",
+    description="Detail satu delegation task pada room tertentu.",
+    mime_type="application/json",
+)
+async def room_task_resource(room_id: str, task_id: str) -> str:
+    payload = await _fetch_task_resource(room_id, quote(task_id, safe=""))
     return json.dumps(payload, indent=2)
 
 
@@ -1579,6 +1663,191 @@ async def capability_remove_self() -> str:
             "message": "Capability profile kustom dihapus. Resource self sekarang kembali ke profil minimal room.",
             **profile_payload,
         }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_offer")
+async def task_offer(params: TaskOfferInput) -> str:
+    """
+    Tawarkan satu task delegasi ke agent tertentu pada room aktif.
+
+    Returns:
+        str: JSON status offer + task terbaru
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_task_context()
+        payload = {
+            "type": "task_offer",
+            "title": params.title,
+            "to_agent_id": params.to_agent_id,
+            "priority": params.priority,
+        }
+        if params.point_of_contact_agent_id:
+            payload["point_of_contact_agent_id"] = params.point_of_contact_agent_id
+
+        request_id, ack = await _await_ack(payload)
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat mengirim delegation offer.",
+            })
+
+        task_id = ack.get("task_id")
+        task_payload = (
+            await _fetch_task_by_id(room_id, task_id)
+            if isinstance(task_id, str) and task_id
+            else {"success": False, "error": "Task ID tidak dikembalikan relay."}
+        )
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "delegated_by": self_agent_id,
+            "delegated_by_stable_identity_id": self_stable_identity_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "task_id": task_id,
+            "resource_uri": f"ssyubix://rooms/{room_id}/tasks/{task_id}" if isinstance(task_id, str) and task_id else None,
+            **task_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_accept")
+async def task_accept(params: TaskTransitionInput) -> str:
+    """
+    Terima delegation offer yang ditujukan ke agent ini.
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_task_context()
+        request_id, ack = await _await_ack({
+            "type": "task_accept",
+            "task_id": params.task_id,
+        })
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat menerima delegation offer.",
+            })
+        task_payload = await _fetch_task_by_id(room_id, params.task_id)
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "my_stable_identity_id": self_stable_identity_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "task_id": params.task_id,
+            "resource_uri": f"ssyubix://rooms/{room_id}/tasks/{params.task_id}",
+            **task_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_reject")
+async def task_reject(params: TaskTransitionInput) -> str:
+    """
+    Tolak delegation offer yang ditujukan ke agent ini.
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_task_context()
+        payload = {
+            "type": "task_reject",
+            "task_id": params.task_id,
+        }
+        if params.reason:
+            payload["reason"] = params.reason
+        request_id, ack = await _await_ack(payload)
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat menolak delegation offer.",
+            })
+        task_payload = await _fetch_task_by_id(room_id, params.task_id)
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "my_stable_identity_id": self_stable_identity_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "task_id": params.task_id,
+            "resource_uri": f"ssyubix://rooms/{room_id}/tasks/{params.task_id}",
+            **task_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_defer")
+async def task_defer(params: TaskDeferInput) -> str:
+    """
+    Tunda delegation offer yang ditujukan ke agent ini.
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_task_context()
+        payload = {
+            "type": "task_defer",
+            "task_id": params.task_id,
+        }
+        if params.reason:
+            payload["reason"] = params.reason
+        if params.deferred_until:
+            payload["deferred_until"] = params.deferred_until
+        request_id, ack = await _await_ack(payload)
+        if ack is None:
+            return json.dumps({
+                "success": False,
+                "request_id": request_id,
+                "error": "ACK timeout saat menunda delegation offer.",
+            })
+        task_payload = await _fetch_task_by_id(room_id, params.task_id)
+        return json.dumps({
+            "success": ack.get("accepted", False),
+            "room_id": room_id,
+            "my_agent_id": self_agent_id,
+            "my_stable_identity_id": self_stable_identity_id,
+            "request_id": request_id,
+            "message_id": ack.get("message_id"),
+            "sequence": ack.get("sequence"),
+            "task_id": params.task_id,
+            "resource_uri": f"ssyubix://rooms/{room_id}/tasks/{params.task_id}",
+            **task_payload,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_list")
+async def task_list() -> str:
+    """
+    Lihat daftar delegation task pada room aktif.
+    """
+    try:
+        room_id, _, _ = _require_task_context()
+        payload = await _fetch_task_resource(room_id)
+        return json.dumps(payload, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="task_get")
+async def task_get(params: TaskLookupInput) -> str:
+    """
+    Baca satu delegation task dari room aktif.
+    """
+    try:
+        room_id, _, _ = _require_task_context()
+        payload = await _fetch_task_by_id(room_id, params.task_id)
+        return json.dumps(payload, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
