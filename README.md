@@ -128,6 +128,9 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - [`docs/room-resume-context.md`](docs/room-resume-context.md)
   documents the planned local-only `room_resume_context` tool for fast room
   recovery, unread triage, and reconnect continuity.
+- [`docs/room-banlist.md`](docs/room-banlist.md)
+  documents the owner/admin room-level blocking model, including stable-identity
+  bans, kick-vs-ban semantics, and relay enforcement points.
 
 ## Releases
 
