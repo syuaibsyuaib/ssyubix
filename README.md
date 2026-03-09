@@ -104,6 +104,9 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
   documents the metadata-first task manifest model, external artifact
   references, and the cost boundary between Cloudflare, connectors, and local
   drafts.
+- [`docs/task-field-classification.md`](docs/task-field-classification.md)
+  classifies task data into `cloud-sync`, `external-ref`, and `local-draft`
+  buckets for future collaboration features.
 - [`docs/connector-artifact-accessibility.md`](docs/connector-artifact-accessibility.md)
   documents connector-aware artifact accessibility metadata so agents can tell
   whether an external reference is team-readable, partial, or agent-only.
