@@ -10,6 +10,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Added room role model documentation for `owner`, `admin`, and implicit member governance in `ssyubix` rooms
 - Added `room_resume_context` design documentation for local recovery and context continuity
+- Added room banlist design documentation for owner/admin blocking based on `stable_agent_identity_id`
 
 ## [2.3.0] - 2026-03-09
 
