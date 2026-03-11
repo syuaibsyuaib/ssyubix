@@ -156,3 +156,7 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 
 - Source: `https://github.com/syuaibsyuaib/ssyubix`
 - Package: `https://pypi.org/project/ssyubix/`
+
+<a href="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink/badge" />
+</a>
