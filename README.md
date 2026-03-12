@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ssyubix-icon.svg" alt="ssyubix icon" width="148">
+</p>
+
 # ssyubix
 
 <p align="center">
@@ -156,6 +160,3 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 <a href="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink/badge" />
 </a>
-<p align="center">
-  <img src="assets/ssyubix-icon.svg" alt="ssyubix icon" width="148">
-</p>
