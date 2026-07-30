@@ -47,6 +47,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run Worker unit tests
         run: npx -y tsx --test src/room-meta.test.ts src/message-protocol.test.ts src/presence.test.ts
 
