@@ -1,3 +1,5 @@
+import type { RoomRoleLabel, StoredRoomRoleState } from "./room-roles";
+
 export interface SequencedRoomPayload {
   room_id: string;
   message_id: string;
@@ -20,6 +22,11 @@ export interface RoomEventPayload extends SequencedRoomPayload {
   agent_id: string;
   stable_agent_identity_id?: string;
   name: string;
+  role_label?: RoomRoleLabel;
+  room_roles?: StoredRoomRoleState;
+  target_agent_id?: string;
+  target_stable_identity_id?: string;
+  target_role_label?: RoomRoleLabel;
   task_id?: string;
   task?: unknown;
   presence?: "online" | "offline";
@@ -39,7 +46,9 @@ export interface AckPayload {
     | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
-    | "capability_remove";
+    | "capability_remove"
+    | "room_admin_add"
+    | "room_admin_remove";
   room_id: string;
   request_id?: string;
   accepted: boolean;
@@ -49,6 +58,11 @@ export interface AckPayload {
   message_id?: string;
   sequence?: number;
   task_id?: string;
+  role_label?: RoomRoleLabel;
+  room_roles?: StoredRoomRoleState;
+  target_agent_id?: string;
+  target_stable_identity_id?: string;
+  target_role_label?: RoomRoleLabel;
   to?: string;
   broadcast?: boolean;
 }
@@ -89,6 +103,11 @@ export function createRoomEvent(params: {
   agentId: string;
   stableAgentIdentityId?: string;
   name: string;
+  roleLabel?: RoomRoleLabel;
+  roomRoles?: StoredRoomRoleState;
+  targetAgentId?: string;
+  targetStableIdentityId?: string;
+  targetRoleLabel?: RoomRoleLabel;
   taskId?: string;
   task?: unknown;
   presence?: "online" | "offline";
@@ -106,6 +125,11 @@ export function createRoomEvent(params: {
     agent_id: params.agentId,
     stable_agent_identity_id: params.stableAgentIdentityId,
     name: params.name,
+    role_label: params.roleLabel,
+    room_roles: params.roomRoles,
+    target_agent_id: params.targetAgentId,
+    target_stable_identity_id: params.targetStableIdentityId,
+    target_role_label: params.targetRoleLabel,
     task_id: params.taskId,
     task: params.task,
     presence: params.presence,
@@ -125,7 +149,9 @@ export function createAck(params: {
     | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
-    | "capability_remove";
+    | "capability_remove"
+    | "room_admin_add"
+    | "room_admin_remove";
   roomId: string;
   requestId?: string;
   accepted?: boolean;
@@ -135,6 +161,11 @@ export function createAck(params: {
   messageId?: string;
   sequence?: number;
   taskId?: string;
+  roleLabel?: RoomRoleLabel;
+  roomRoles?: StoredRoomRoleState;
+  targetAgentId?: string;
+  targetStableIdentityId?: string;
+  targetRoleLabel?: RoomRoleLabel;
   to?: string;
   broadcast?: boolean;
 }): AckPayload {
@@ -150,6 +181,11 @@ export function createAck(params: {
     message_id: params.messageId,
     sequence: params.sequence,
     task_id: params.taskId,
+    role_label: params.roleLabel,
+    room_roles: params.roomRoles,
+    target_agent_id: params.targetAgentId,
+    target_stable_identity_id: params.targetStableIdentityId,
+    target_role_label: params.targetRoleLabel,
     to: params.to,
     broadcast: params.broadcast,
   };
