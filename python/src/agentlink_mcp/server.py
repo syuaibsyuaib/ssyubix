@@ -788,7 +788,8 @@ def _room_peers() -> dict:
     return current_room["peers"]
 
 def _set_peer_state(agent_id_value: Optional[str], *, stable_agent_identity_id: Optional[str],
-    name: Optional[str], presence: str, joined_at: Optional[str], last_seen_at: Optional[str]):
+    name: Optional[str], presence: str, joined_at: Optional[str], last_seen_at: Optional[str],
+    role_label: Optional[str] = None):
     if not agent_id_value:
         return
     peers = _room_peers()
@@ -803,12 +804,68 @@ def _set_peer_state(agent_id_value: Optional[str], *, stable_agent_identity_id: 
         "presence": presence,
         "joined_at": joined_at or existing.get("joined_at"),
         "last_seen_at": last_seen_at or existing.get("last_seen_at") or _now_iso(),
+        "role_label": role_label or existing.get("role_label") or "member",
     }
 
 def _remove_peer_state(agent_id_value: Optional[str]):
     if not agent_id_value or current_room is None:
         return
     _room_peers().pop(agent_id_value, None)
+
+def _normalize_room_role_label(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"owner", "admin", "member"}:
+            return normalized
+    return "member"
+
+def _normalize_stable_identity_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        normalized = _sanitize_stable_agent_identity_id(entry)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        items.append(normalized)
+    return items
+
+def _resolve_room_role_label(owner_stable_identity_id: Optional[str],
+    admin_stable_identity_ids: list[str], identity_id: Optional[str]) -> str:
+    normalized_identity_id = _sanitize_stable_agent_identity_id(identity_id)
+    if normalized_identity_id and normalized_identity_id == owner_stable_identity_id:
+        return "owner"
+    if normalized_identity_id and normalized_identity_id in admin_stable_identity_ids:
+        return "admin"
+    return "member"
+
+def _apply_room_role_state(payload: dict):
+    if current_room is None:
+        return
+    owner_stable_identity_id = _sanitize_stable_agent_identity_id(
+        payload.get("owner_stable_identity_id"),
+    )
+    admin_stable_identity_ids = _normalize_stable_identity_list(
+        payload.get("admin_stable_identity_ids"),
+    )
+    current_room["owner_stable_identity_id"] = owner_stable_identity_id
+    current_room["admin_stable_identity_ids"] = admin_stable_identity_ids
+    current_room["room_role"] = _resolve_room_role_label(
+        owner_stable_identity_id,
+        admin_stable_identity_ids,
+        stable_agent_identity_id,
+    )
+    current_room["room_role_label"] = current_room["room_role"]
+    for peer in _room_peers().values():
+        if not isinstance(peer, dict):
+            continue
+        peer["role_label"] = _resolve_room_role_label(
+            owner_stable_identity_id,
+            admin_stable_identity_ids,
+            peer.get("stable_agent_identity_id"),
+        )
 
 def _update_pong(msg: dict):
     if current_room is None:
@@ -912,6 +969,13 @@ def _require_capability_context() -> tuple[str, str]:
     return current_room["room_id"].upper(), agent_id
 
 
+def _require_room_connection_context() -> tuple[str, str, str]:
+    room_id, self_agent_id = _require_capability_context()
+    if not stable_agent_identity_id:
+        raise RuntimeError("Stable agent identity belum tersedia.")
+    return room_id, self_agent_id, stable_agent_identity_id
+
+
 async def _fetch_self_capability_profile() -> dict[str, Any]:
     room_id, self_agent_id = _require_capability_context()
     payload = await _fetch_capability_resource(
@@ -925,14 +989,34 @@ async def _fetch_self_capability_profile() -> dict[str, Any]:
 
 
 def _require_task_context() -> tuple[str, str, str]:
-    room_id, self_agent_id = _require_capability_context()
-    if not stable_agent_identity_id:
-        raise RuntimeError("Stable agent identity belum tersedia.")
-    return room_id, self_agent_id, stable_agent_identity_id
+    return _require_room_connection_context()
 
 
 async def _fetch_task_by_id(room_id: str, task_id: str) -> dict[str, Any]:
     return await _fetch_task_resource(room_id, quote(task_id, safe=""))
+
+
+def _apply_room_role_ack(ack: dict):
+    if current_room is None:
+        return
+    room_roles = ack.get("room_roles")
+    if isinstance(room_roles, dict):
+        _apply_room_role_state(room_roles)
+    if "role_label" in ack:
+        current_room["room_role"] = _normalize_room_role_label(ack.get("role_label"))
+        current_room["room_role_label"] = current_room["room_role"]
+    target_agent_id = ack.get("target_agent_id")
+    if isinstance(target_agent_id, str) and target_agent_id:
+        _set_peer_state(
+            target_agent_id,
+            stable_agent_identity_id=ack.get("target_stable_identity_id"),
+            name=None,
+            presence=_room_peers().get(target_agent_id, {}).get("presence", "online"),
+            joined_at=_room_peers().get(target_agent_id, {}).get("joined_at"),
+            last_seen_at=_room_peers().get(target_agent_id, {}).get("last_seen_at"),
+            role_label=ack.get("target_role_label"),
+        )
+    _persist_local_room_state()
 
 
 def _schedule_retry_replay(delay: float = 0.0):
@@ -993,11 +1077,17 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
             peers[peer_agent_id] = peer
     current_room = {
         "room_id": rid,
+        "room_name": welcome.get("room_name", rid),
+        "is_private": bool(welcome.get("is_private", bool(token))),
         "last_sequence": welcome.get("last_sequence", 0),
         "joined_at": welcome.get("joined_at"),
         "last_seen_at": welcome.get("last_seen_at"),
         "presence": welcome.get("presence", "online"),
         "stable_agent_identity_id": stable_agent_identity_id,
+        "room_role": _normalize_room_role_label(welcome.get("room_role")),
+        "room_role_label": _normalize_room_role_label(welcome.get("role_label", welcome.get("room_role"))),
+        "owner_stable_identity_id": _sanitize_stable_agent_identity_id(welcome.get("owner_stable_identity_id")),
+        "admin_stable_identity_ids": _normalize_stable_identity_list(welcome.get("admin_stable_identity_ids")),
         "session_resumed": welcome.get("session_resumed", False),
         "heartbeat_interval_seconds": welcome.get("heartbeat_interval_seconds", 30),
         "heartbeat_timeout_seconds": welcome.get("heartbeat_timeout_seconds", 90),
@@ -1017,6 +1107,7 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
         "local_retry_queue_count": 0,
         "peers": peers,
     }
+    _apply_room_role_state(welcome)
     room_credentials = {"room_id": rid, "token": token}
     ws_conn = conn
     _restore_local_room_state(rid)
@@ -1172,6 +1263,8 @@ def _handle_incoming(msg: dict):
             except Exception as exc:
                 logger.warning("Stable identity cache write failed during welcome: %s", exc)
         if current_room is not None:
+            current_room["room_name"] = msg.get("room_name", current_room.get("room_name", current_room.get("room_id")))
+            current_room["is_private"] = bool(msg.get("is_private", current_room.get("is_private", False)))
             current_room["last_sequence"] = msg.get("last_sequence", current_room.get("last_sequence", 0))
             current_room["joined_at"] = msg.get("joined_at", current_room.get("joined_at"))
             current_room["last_seen_at"] = msg.get("last_seen_at", current_room.get("last_seen_at"))
@@ -1191,10 +1284,12 @@ def _handle_incoming(msg: dict):
                 if peer_agent_id:
                     peers[peer_agent_id] = peer
             current_room["peers"] = peers
+            _apply_room_role_state(msg)
         for peer in msg.get("agents", []):
             _append_inbox_entry({"type": "event", "event": "agent_online",
                 "from": peer.get("name"), "agent_id": peer.get("agent_id"),
                 "stable_agent_identity_id": peer.get("stable_agent_identity_id"),
+                "role_label": peer.get("role_label"),
                 "presence": peer.get("presence", "online"),
                 "joined_at": peer.get("joined_at"),
                 "last_seen_at": peer.get("last_seen_at"),
@@ -1218,13 +1313,32 @@ def _handle_incoming(msg: dict):
                 stable_agent_identity_id=msg.get("stable_agent_identity_id"),
                 name=msg.get("name"),
                 presence=msg.get("presence", "online"), joined_at=msg.get("joined_at"),
-                last_seen_at=msg.get("last_seen_at"))
+                last_seen_at=msg.get("last_seen_at"),
+                role_label=msg.get("role_label"))
             _schedule_retry_replay(delay=0.5)
         elif event_name == "agent_left":
             _remove_peer_state(event_agent_id)
+        elif event_name == "room_roles_updated":
+            _apply_room_role_state(msg.get("room_roles") if isinstance(msg.get("room_roles"), dict) else msg)
+            target_agent_id = msg.get("target_agent_id")
+            if isinstance(target_agent_id, str) and target_agent_id:
+                _set_peer_state(
+                    target_agent_id,
+                    stable_agent_identity_id=msg.get("target_stable_identity_id"),
+                    name=None,
+                    presence=_room_peers().get(target_agent_id, {}).get("presence", "online"),
+                    joined_at=_room_peers().get(target_agent_id, {}).get("joined_at"),
+                    last_seen_at=_room_peers().get(target_agent_id, {}).get("last_seen_at"),
+                    role_label=msg.get("target_role_label"),
+                )
         _append_inbox_entry({"type": "event", "event": msg.get("event"),
             "from": msg.get("name"), "agent_id": msg.get("agent_id"),
             "stable_agent_identity_id": msg.get("stable_agent_identity_id"),
+            "role_label": msg.get("role_label"),
+            "room_roles": msg.get("room_roles"),
+            "target_agent_id": msg.get("target_agent_id"),
+            "target_stable_identity_id": msg.get("target_stable_identity_id"),
+            "target_role_label": msg.get("target_role_label"),
             "task_id": msg.get("task_id"),
             "task": msg.get("task"),
             "message_id": msg.get("message_id"), "sequence": msg.get("sequence"),
@@ -1304,6 +1418,11 @@ class JoinRoomInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     room_id: str           = Field(..., description="ID room (6 karakter, contoh: ABC123)")
     token:   Optional[str] = Field(default=None, description="Token untuk private room")
+
+
+class RoomAdminMutationInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    target_agent_id: str = Field(..., min_length=1, description="Agent ID target yang sedang aktif di room")
 
 class SendInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -1855,13 +1974,19 @@ async def task_get(params: TaskLookupInput) -> str:
 @mcp.tool(name="agent_register")
 async def agent_register(params: RegisterInput) -> str:
     """
-    Daftarkan agent ke AgentLink. Wajib dipanggil pertama.
-    Tidak perlu tunnel — relay via Cloudflare Workers permanen.
+    Daftarkan agent ke AgentLink. Wajib dipanggil pertama sebelum tools lain.
+
+    Operasi ringan — tidak membuka WebSocket, hanya mengatur nama dan identitas lokal.
+    Gunakan segera setelah startup, sebelum room_create atau room_join. Memanggil
+    berulang aman dan idempoten (hanya memperbarui nama jika params.name diberikan).
+    Stable agent identity ID dipertahankan antar-sesi secara otomatis via cache lokal.
+    Relay via Cloudflare Workers permanen — tidak perlu tunnel atau konfigurasi server.
 
     Args:
-        params: name (opsional)
+        params.name (str, opsional): Nama display agent. Jika kosong, nama acak digunakan.
+
     Returns:
-        str: JSON berisi status agent
+        str: JSON berisi name, server URL, stable_agent_identity_id, dan pesan konfirmasi.
     """
     global agent_name
     if params.name:
@@ -1885,8 +2010,14 @@ async def room_create(params: CreateRoomInput) -> str:
         str: JSON berisi room_id dan token (jika private)
     """
     try:
+        if not stable_agent_identity_id:
+            raise RuntimeError("Stable agent identity belum tersedia.")
         async with http_session.post(f"{AGENTLINK_URL}/rooms",
-            json={"name": params.name, "is_private": params.is_private}) as r:
+            json={
+                "name": params.name,
+                "is_private": params.is_private,
+                "owner_stable_identity_id": stable_agent_identity_id,
+            }) as r:
             return json.dumps(await r.json(), indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
@@ -1924,6 +2055,11 @@ async def room_join(params: JoinRoomInput) -> str:
 
         return json.dumps({"success": True, "room_id": rid, "my_agent_id": agent_id,
             "stable_agent_identity_id": stable_agent_identity_id,
+            "room_name": current_room.get("room_name") if current_room else rid,
+            "is_private": current_room.get("is_private") if current_room else bool(params.token),
+            "room_role": current_room.get("room_role") if current_room else None,
+            "owner_stable_identity_id": current_room.get("owner_stable_identity_id") if current_room else None,
+            "admin_stable_identity_ids": current_room.get("admin_stable_identity_ids") if current_room else [],
             "agents": existing, "agent_count": len(existing) + 1,
             "session_resumed": current_room.get("session_resumed", False) if current_room else False,
             "heartbeat_interval_seconds": current_room.get("heartbeat_interval_seconds") if current_room else None,
@@ -1998,6 +2134,72 @@ async def room_info() -> str:
         "my_agent_id": agent_id,
         "stable_agent_identity_id": stable_agent_identity_id,
         "connected": ws_conn is not None}, indent=2)
+
+
+@mcp.tool(name="room_admin_add")
+async def room_admin_add(params: RoomAdminMutationInput) -> str:
+    """
+    Jadikan agent aktif lain sebagai admin room saat ini.
+
+    Hanya owner room yang boleh menjalankan aksi ini.
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()
+        _, ack = await _await_ack({
+            "type": "room_admin_add",
+            "target_agent_id": params.target_agent_id,
+        })
+        if ack is None:
+            raise RuntimeError("Timeout menunggu ACK room_admin_add.")
+        _apply_room_role_ack(ack)
+        return json.dumps({
+            "success": True,
+            "room_id": room_id,
+            "performed_by": self_agent_id,
+            "performed_by_stable_identity_id": self_stable_identity_id,
+            "room_role": current_room.get("room_role") if current_room else None,
+            "owner_stable_identity_id": current_room.get("owner_stable_identity_id") if current_room else None,
+            "admin_stable_identity_ids": current_room.get("admin_stable_identity_ids", []) if current_room else [],
+            "target_agent_id": ack.get("target_agent_id", params.target_agent_id),
+            "target_stable_identity_id": ack.get("target_stable_identity_id"),
+            "target_role": ack.get("target_role_label"),
+            "message": f"Agent '{params.target_agent_id}' sekarang menjadi admin room.",
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@mcp.tool(name="room_admin_remove")
+async def room_admin_remove(params: RoomAdminMutationInput) -> str:
+    """
+    Cabut role admin dari agent aktif lain pada room saat ini.
+
+    Hanya owner room yang boleh menjalankan aksi ini.
+    """
+    try:
+        room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()
+        _, ack = await _await_ack({
+            "type": "room_admin_remove",
+            "target_agent_id": params.target_agent_id,
+        })
+        if ack is None:
+            raise RuntimeError("Timeout menunggu ACK room_admin_remove.")
+        _apply_room_role_ack(ack)
+        return json.dumps({
+            "success": True,
+            "room_id": room_id,
+            "performed_by": self_agent_id,
+            "performed_by_stable_identity_id": self_stable_identity_id,
+            "room_role": current_room.get("room_role") if current_room else None,
+            "owner_stable_identity_id": current_room.get("owner_stable_identity_id") if current_room else None,
+            "admin_stable_identity_ids": current_room.get("admin_stable_identity_ids", []) if current_room else [],
+            "target_agent_id": ack.get("target_agent_id", params.target_agent_id),
+            "target_stable_identity_id": ack.get("target_stable_identity_id"),
+            "target_role": ack.get("target_role_label"),
+            "message": f"Role admin untuk agent '{params.target_agent_id}' sudah dicabut.",
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
 
 @mcp.tool(name="room_local_summary")
