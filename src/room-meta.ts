@@ -4,6 +4,8 @@ export interface StoredRoomMeta {
   is_private: boolean;
   token: string;
   created_at: string;
+  owner_stable_identity_id?: string;
+  admin_stable_identity_ids?: string[];
   agent_count?: number;
 }
 

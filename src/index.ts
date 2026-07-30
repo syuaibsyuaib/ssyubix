@@ -39,6 +39,14 @@ import {
 } from "./presence";
 import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
 import {
+  grantRoomAdmin,
+  normalizeRoomRoleState,
+  resolveRoomRoleLabel,
+  revokeRoomAdmin,
+  type RoomRoleLabel,
+  type StoredRoomRoleState,
+} from "./room-roles";
+import {
   acceptDelegationOffer,
   createDelegationOffer,
   createTaskRegistryManifest,
@@ -73,6 +81,9 @@ interface AgentInfo {
   stable_agent_identity_id?: string;
   name: string;
   joined_at: string;
+  last_seen_at: string;
+  presence: "online" | "offline";
+  role_label: RoomRoleLabel;
 }
 
 interface TaskEventPayload {
@@ -96,6 +107,15 @@ interface TaskEventPayload {
   updated_at: string;
 }
 
+interface RoomRoleAckPayload {
+  owner_stable_identity_id?: string;
+  admin_stable_identity_ids: string[];
+  role_label: RoomRoleLabel;
+  target_agent_id: string;
+  target_stable_identity_id: string;
+  target_role_label: RoomRoleLabel;
+}
+
 interface AgentSessionState extends StoredRoomSession {
   room_id: string;
 }
@@ -115,7 +135,9 @@ interface WsMessage {
     | "task_defer"
     | "capability_upsert"
     | "capability_set_availability"
-    | "capability_remove";
+    | "capability_remove"
+    | "room_admin_add"
+    | "room_admin_remove";
   [key: string]: unknown;
 }
 
@@ -176,13 +198,28 @@ export default {
 
     // ── POST /rooms ── buat room baru
     if (path === "/rooms" && request.method === "POST") {
-      let body: { name?: string; is_private?: boolean } = {};
+      let body: {
+        name?: string;
+        is_private?: boolean;
+        owner_stable_identity_id?: string;
+      } = {};
       try {
         body = await request.json();
       } catch {}
 
       const name = (body.name || "unnamed").slice(0, 50);
       const is_private = body.is_private === true;
+      const ownerStableIdentityId = sanitizeStableAgentIdentityId(
+        typeof body.owner_stable_identity_id === "string"
+          ? body.owner_stable_identity_id
+          : null,
+      );
+      if (!ownerStableIdentityId) {
+        return Response.json({
+          success: false,
+          error: "owner_stable_identity_id wajib diisi untuk membuat room.",
+        }, { status: 400, headers: corsHeaders });
+      }
       const room_id = generateId(6);
       const token = is_private ? generateId(12) : "";
       const created_at = new Date().toISOString();
@@ -193,7 +230,15 @@ export default {
       );
       await registry.fetch(new Request("http://internal/register", {
         method: "POST",
-        body: JSON.stringify({ room_id, name, is_private, token, created_at }),
+        body: JSON.stringify({
+          room_id,
+          name,
+          is_private,
+          token,
+          created_at,
+          owner_stable_identity_id: ownerStableIdentityId,
+          admin_stable_identity_ids: [],
+        }),
       }));
 
       return Response.json({
@@ -202,6 +247,8 @@ export default {
         name,
         is_private,
         token: is_private ? token : undefined,
+        owner_stable_identity_id: ownerStableIdentityId,
+        role_label: "owner",
         message: is_private
           ? `Bagikan room_id '${room_id}' dan token ke peer.`
           : `Bagikan room_id '${room_id}' ke peer untuk join.`,
@@ -339,8 +386,14 @@ export default {
 // ─── Durable Object: Room ─────────────────────────────────────────────────────
 
 export class AgentLinkRoom extends DurableObject {
+  private readonly env: Env;
   private sequenceCounter: number | null = null;
   private lastHydratedAt: string | null = null;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.env = env;
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -406,9 +459,15 @@ export class AgentLinkRoom extends DurableObject {
 
     const joinSequence = await this.nextSequence();
     const heartbeat = buildHeartbeatConfig();
+    const roomMeta = await this.loadRoomMeta(roomId);
+    const roomRoles = normalizeRoomRoleState(roomMeta ?? undefined);
+    const selfRoleLabel = resolveRoomRoleLabel(
+      roomRoles,
+      state.stable_agent_identity_id,
+    );
 
     // Kirim info ke agent yang baru join
-    const existingAgents = this.listActiveAgents({
+    const existingAgents = this.listActiveAgentsWithRoles(roomRoles, {
       excludeAgentId: state.agent_id,
       excludeSessionId: sessionId,
     });
@@ -419,10 +478,16 @@ export class AgentLinkRoom extends DurableObject {
       stable_agent_identity_id: state.stable_agent_identity_id,
       name: agentName,
       room_id: roomId,
+      room_name: roomMeta?.name ?? roomId,
+      is_private: roomMeta?.is_private ?? false,
+      room_role: selfRoleLabel,
+      owner_stable_identity_id: roomRoles.owner_stable_identity_id,
+      admin_stable_identity_ids: roomRoles.admin_stable_identity_ids,
       last_sequence: joinSequence,
       joined_at: state.joined_at,
       last_seen_at: state.last_seen_at,
       presence: state.presence,
+      role_label: selfRoleLabel,
       session_resumed: session.reconnected,
       heartbeat_interval_seconds: heartbeat.heartbeat_interval_seconds,
       heartbeat_timeout_seconds: heartbeat.heartbeat_timeout_seconds,
@@ -444,6 +509,7 @@ export class AgentLinkRoom extends DurableObject {
       agentId: state.agent_id,
       stableAgentIdentityId: state.stable_agent_identity_id,
       name: agentName,
+      roleLabel: selfRoleLabel,
       presence: state.presence,
       joinedAt: state.joined_at,
       lastSeenAt: state.last_seen_at,
@@ -789,6 +855,100 @@ export class AgentLinkRoom extends DurableObject {
       return;
     }
 
+    if (msg.type === "room_admin_add" || msg.type === "room_admin_remove") {
+      const timestamp = new Date().toISOString();
+      const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
+      const targetAgentId = typeof msg.target_agent_id === "string"
+        ? msg.target_agent_id.trim()
+        : "";
+      if (!targetAgentId) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: "target_agent_id wajib diisi.",
+          request_id: requestId,
+          code: "missing_room_role_target",
+        }));
+        return;
+      }
+      const targetState = this.findActiveAgentById(targetAgentId);
+      if (!targetState) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: `Agent target '${targetAgentId}' tidak sedang aktif di room ini.`,
+          request_id: requestId,
+          code: "room_role_target_not_active",
+        }));
+        return;
+      }
+      if (!targetState.stable_agent_identity_id) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: `Agent target '${targetAgentId}' belum punya stable identity.`,
+          request_id: requestId,
+          code: "room_role_target_missing_identity",
+        }));
+        return;
+      }
+
+      const roleMutation = await this.mutateRoomAdminRole({
+        roomId,
+        actorStableIdentityId: agentState.stable_agent_identity_id,
+        targetStableIdentityId: targetState.stable_agent_identity_id,
+        action: msg.type === "room_admin_add" ? "grant" : "revoke",
+      });
+
+      if (!roleMutation.ok) {
+        ws.send(JSON.stringify({
+          type: "error",
+          error: roleMutation.error || "Gagal memutakhirkan role room.",
+          request_id: requestId,
+          code: msg.type === "room_admin_add"
+            ? "room_admin_add_failed"
+            : "room_admin_remove_failed",
+        }));
+        return;
+      }
+
+      const roleAck = this.buildRoomRoleAck(
+        roleMutation.roleState,
+        agentState.stable_agent_identity_id,
+        targetState,
+      );
+      const sequence = roleMutation.changed ? await this.nextSequence() : undefined;
+      if (sequence !== undefined) {
+        this.broadcast(ws, JSON.stringify(createRoomEvent({
+          roomId,
+          sequence,
+          timestamp,
+          event: "room_roles_updated",
+          agentId: agentId,
+          stableAgentIdentityId: agentState.stable_agent_identity_id,
+          name,
+          roleLabel: roleAck.role_label,
+          roomRoles: roleMutation.roleState,
+          targetAgentId: targetState.agent_id,
+          targetStableIdentityId: targetState.stable_agent_identity_id,
+          targetRoleLabel: roleAck.target_role_label,
+        })));
+      }
+      ws.send(JSON.stringify(createAck({
+        action: msg.type,
+        roomId,
+        requestId,
+        delivered: true,
+        recipientCount: sequence ? Math.max(0, this.ctx.getWebSockets().length - 1) : 0,
+        timestamp,
+        sequence,
+        messageId: sequence ? `${roomId}:${sequence}` : undefined,
+        roleLabel: roleAck.role_label,
+        roomRoles: roleMutation.roleState,
+        targetAgentId: roleAck.target_agent_id,
+        targetStableIdentityId: roleAck.target_stable_identity_id,
+        targetRoleLabel: roleAck.target_role_label,
+      })));
+      return;
+    }
+
     if (msg.type === "capability_upsert") {
       const timestamp = new Date().toISOString();
       const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
@@ -1004,6 +1164,102 @@ export class AgentLinkRoom extends DurableObject {
       previousState,
       nextState,
     });
+  }
+
+  private getRegistryStub() {
+    return this.env.AGENTLINK_REGISTRY.get(
+      this.env.AGENTLINK_REGISTRY.idFromName("global"),
+    );
+  }
+
+  private async loadRoomMeta(roomId: string): Promise<RoomMeta | null> {
+    const response = await this.getRegistryStub().fetch(
+      new Request(`http://internal/room?room_id=${encodeURIComponent(roomId)}`),
+    );
+    const payload = await response.json() as {
+      ok?: boolean;
+      room?: RoomMeta;
+      error?: string;
+    };
+    if (!response.ok || !payload.ok || !payload.room) {
+      return null;
+    }
+    return payload.room;
+  }
+
+  private async loadRoomRoleState(roomId: string): Promise<StoredRoomRoleState> {
+    const room = await this.loadRoomMeta(roomId);
+    return normalizeRoomRoleState(room ?? undefined);
+  }
+
+  private listActiveAgentsWithRoles(
+    roleState: StoredRoomRoleState,
+    options: {
+      excludeAgentId?: string;
+      excludeSessionId?: string;
+    } = {},
+  ): AgentInfo[] {
+    return this.listActiveAgents(options).map((snapshot) => ({
+      ...snapshot,
+      role_label: resolveRoomRoleLabel(
+        roleState,
+        snapshot.stable_agent_identity_id,
+      ),
+    }));
+  }
+
+  private buildRoomRoleAck(
+    roleState: StoredRoomRoleState,
+    actorStableIdentityId: string | undefined,
+    targetState: AgentSessionState,
+  ): RoomRoleAckPayload {
+    return {
+      owner_stable_identity_id: roleState.owner_stable_identity_id,
+      admin_stable_identity_ids: roleState.admin_stable_identity_ids,
+      role_label: resolveRoomRoleLabel(roleState, actorStableIdentityId),
+      target_agent_id: targetState.agent_id,
+      target_stable_identity_id: targetState.stable_agent_identity_id ?? "",
+      target_role_label: resolveRoomRoleLabel(
+        roleState,
+        targetState.stable_agent_identity_id,
+      ),
+    };
+  }
+
+  private async mutateRoomAdminRole(params: {
+    roomId: string;
+    actorStableIdentityId?: string;
+    targetStableIdentityId: string;
+    action: "grant" | "revoke";
+  }): Promise<{
+    ok: boolean;
+    changed: boolean;
+    roleState: StoredRoomRoleState;
+    error?: string;
+  }> {
+    const response = await this.getRegistryStub().fetch(new Request(
+      `http://internal/${params.action === "grant" ? "grant-admin" : "revoke-admin"}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          room_id: params.roomId,
+          actor_stable_identity_id: params.actorStableIdentityId,
+          target_stable_identity_id: params.targetStableIdentityId,
+        }),
+      },
+    ));
+    const payload = await response.json() as {
+      ok?: boolean;
+      changed?: boolean;
+      error?: string;
+      role_state?: StoredRoomRoleState;
+    };
+    return {
+      ok: response.ok && payload.ok !== false,
+      changed: payload.changed === true,
+      roleState: normalizeRoomRoleState(payload.role_state),
+      error: payload.error,
+    };
   }
 
   private listActiveAgents(options: {
@@ -1562,8 +1818,26 @@ export class AgentLinkRegistry extends DurableObject {
     // Register room baru
     if (action === "register" && request.method === "POST") {
       const data = await request.json() as RoomMeta;
-      await this.ctx.storage.put(`room:${data.room_id}`, data);
+      const roleState = normalizeRoomRoleState(data);
+      const room: RoomMeta = {
+        ...data,
+        owner_stable_identity_id: roleState.owner_stable_identity_id,
+        admin_stable_identity_ids: roleState.admin_stable_identity_ids,
+      };
+      await this.ctx.storage.put(`room:${room.room_id}`, room);
       return Response.json({ ok: true });
+    }
+
+    if (action === "room") {
+      const room_id = url.searchParams.get("room_id") || "";
+      const room = await this.ctx.storage.get<RoomMeta>(`room:${room_id}`);
+      if (!room) {
+        return Response.json(
+          { ok: false, error: `Room '${room_id}' tidak ditemukan.` },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true, room });
     }
 
     // Check room + token validity
@@ -1579,6 +1853,63 @@ export class AgentLinkRegistry extends DurableObject {
         return Response.json({ ok: false, error: "Token salah." });
       }
       return Response.json({ ok: true, room });
+    }
+
+    if ((action === "grant-admin" || action === "revoke-admin") && request.method === "POST") {
+      const {
+        room_id,
+        actor_stable_identity_id,
+        target_stable_identity_id,
+      } = await request.json() as {
+        room_id?: string;
+        actor_stable_identity_id?: string;
+        target_stable_identity_id?: string;
+      };
+      const roomId = typeof room_id === "string" ? room_id : "";
+      const room = await this.ctx.storage.get<RoomMeta>(`room:${roomId}`);
+      if (!room) {
+        return Response.json(
+          { ok: false, error: `Room '${roomId}' tidak ditemukan.` },
+          { status: 404 },
+        );
+      }
+
+      const mutation = action === "grant-admin"
+        ? grantRoomAdmin(room, {
+          actorStableIdentityId: actor_stable_identity_id,
+          targetStableIdentityId: target_stable_identity_id,
+        })
+        : revokeRoomAdmin(room, {
+          actorStableIdentityId: actor_stable_identity_id,
+          targetStableIdentityId: target_stable_identity_id,
+        });
+
+      if (!mutation.ok) {
+        return Response.json(
+          {
+            ok: false,
+            changed: false,
+            error: mutation.error || "Unauthorized",
+            role_state: mutation.role_state,
+          },
+          { status: 403 },
+        );
+      }
+
+      if (mutation.changed) {
+        const nextRoom: RoomMeta = {
+          ...room,
+          owner_stable_identity_id: mutation.role_state.owner_stable_identity_id,
+          admin_stable_identity_ids: mutation.role_state.admin_stable_identity_ids,
+        };
+        await this.ctx.storage.put(`room:${roomId}`, nextRoom);
+      }
+
+      return Response.json({
+        ok: true,
+        changed: mutation.changed,
+        role_state: mutation.role_state,
+      });
     }
 
     // Delete room (cleanup)
