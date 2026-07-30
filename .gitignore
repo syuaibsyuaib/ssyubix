@@ -11,3 +11,4 @@ __pycache__/
 .coverage
 .venv/
 token.md
+node_modules/
