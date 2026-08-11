@@ -1144,5 +1144,22 @@ class OnboardingGuideTests(unittest.TestCase):
         self.assertIn("agent_read_inbox", prompt)
 
 
+class ToolDefinitionMetadataTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_metadata_discloses_key_side_effects_and_annotations(self):
+        tools = {tool.name: tool for tool in await server.mcp.list_tools()}
+
+        self.assertTrue(tools["capability_get_self"].annotations.readOnlyHint)
+        self.assertTrue(tools["task_list"].annotations.readOnlyHint)
+        self.assertTrue(tools["capability_remove_self"].annotations.destructiveHint)
+        self.assertTrue(tools["room_leave"].annotations.destructiveHint)
+        self.assertTrue(tools["room_admin_remove"].annotations.destructiveHint)
+
+        self.assertIn("closes the previous WebSocket", tools["room_join"].description)
+        self.assertIn("local retry queue", tools["room_leave"].description)
+        self.assertIn("queued_for_retry", tools["agent_send"].description)
+        self.assertIn("permanently removes", tools["agent_read_inbox"].description)
+        self.assertNotIn("reason", tools["task_accept"].inputSchema["properties"])
+
+
 if __name__ == "__main__":
     unittest.main()

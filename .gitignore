@@ -12,3 +12,4 @@ __pycache__/
 .venv/
 token.md
 node_modules/
+claude_tools/

@@ -22,6 +22,7 @@ import websockets
 import websockets.client
 from websockets.exceptions import ConnectionClosed
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from .onboarding import (
     READ_ME_FIRST_MARKDOWN,
@@ -913,15 +914,19 @@ def _room_resource_auth_params(room_id: str) -> dict[str, str]:
     return {}
 
 
-async def _fetch_room_resource(path_prefix: str, room_id: str, resource_path: str) -> dict[str, Any]:
-    if http_session is None:
+def _require_http_session() -> aiohttp.ClientSession:
+    session = http_session
+    if session is None:
         raise RuntimeError("HTTP session belum siap.")
+    return session
 
+
+async def _fetch_room_resource(path_prefix: str, room_id: str, resource_path: str) -> dict[str, Any]:
     normalized_room_id = room_id.upper()
     suffix = f"/{resource_path}" if resource_path else ""
     url = f"{AGENTLINK_URL}/{path_prefix}/{normalized_room_id}{suffix}"
     status_code = 0
-    async with http_session.get(
+    async with _require_http_session().get(
         url,
         params=_room_resource_auth_params(normalized_room_id),
     ) as response:
@@ -1139,12 +1144,16 @@ def _fail_pending_acks(reason: str):
         pending_acks.pop(request_id, None)
 
 async def _await_ack(payload: dict, timeout: float = 5.0) -> tuple[str, Optional[dict]]:
+    connection = ws_conn
+    if connection is None:
+        raise RuntimeError("WebSocket belum terhubung.")
+
     request_id = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     pending_acks[request_id] = future
     try:
-        await ws_conn.send(json.dumps({**payload, "request_id": request_id}))
+        await connection.send(json.dumps({**payload, "request_id": request_id}))
         ack = await asyncio.wait_for(future, timeout=timeout)
         return request_id, ack
     except asyncio.TimeoutError:
@@ -1319,7 +1328,9 @@ def _handle_incoming(msg: dict):
         elif event_name == "agent_left":
             _remove_peer_state(event_agent_id)
         elif event_name == "room_roles_updated":
-            _apply_room_role_state(msg.get("room_roles") if isinstance(msg.get("room_roles"), dict) else msg)
+            room_roles = msg.get("room_roles")
+            role_payload: dict[Any, Any] = room_roles if isinstance(room_roles, dict) else msg
+            _apply_room_role_state(role_payload)
             target_agent_id = msg.get("target_agent_id")
             if isinstance(target_agent_id, str) and target_agent_id:
                 _set_peer_state(
@@ -1565,6 +1576,11 @@ class TaskTransitionInput(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=240, description="Alasan ringkas reject/defer")
 
 
+class TaskAcceptInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    task_id: str = Field(..., min_length=1, description="ID offer delegasi yang akan diterima")
+
+
 class TaskLookupInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     task_id: str = Field(..., min_length=1, description="ID task yang ingin dibaca")
@@ -1654,13 +1670,17 @@ async def room_task_resource(room_id: str, task_id: str) -> str:
     return json.dumps(payload, indent=2)
 
 
-@mcp.tool(name="capability_get_self")
+@mcp.tool(
+    name="capability_get_self",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def capability_get_self() -> str:
     """
-    Baca capability profile agent ini pada room yang sedang aktif.
+    Read this agent's capability profile in the active room.
 
-    Returns:
-        str: JSON capability profile diri sendiri
+    Use after room_join when choosing work or checking the profile currently visible to peers.
+    This does not change the profile; use capability_upsert_self to change profile fields or
+    capability_set_availability for a status-only update.
     """
     try:
         room_id, self_agent_id = _require_capability_context()
@@ -1676,13 +1696,17 @@ async def capability_get_self() -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="capability_upsert_self")
+@mcp.tool(
+    name="capability_upsert_self",
+    annotations=ToolAnnotations(idempotentHint=True),
+)
 async def capability_upsert_self(params: CapabilityUpsertInput) -> str:
     """
-    Simpan atau perbarui capability card agent ini pada room aktif.
+    Partially update this agent's capability profile in the active room.
 
-    Returns:
-        str: JSON status update + profile terbaru
+    Only supplied fields are changed; omitted fields are preserved. Use this for skills,
+    constraints, tool access, or capacity settings; use capability_set_availability when only
+    availability and optional current_load need to change.
     """
     try:
         room_id, self_agent_id = _require_capability_context()
@@ -1712,17 +1736,20 @@ async def capability_upsert_self(params: CapabilityUpsertInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="capability_set_availability")
+@mcp.tool(
+    name="capability_set_availability",
+    annotations=ToolAnnotations(idempotentHint=True),
+)
 async def capability_set_availability(params: CapabilityAvailabilityInput) -> str:
     """
-    Update availability dan current load capability card agent ini.
+    Set this agent's availability and, optionally, its current workload in the active room.
 
-    Returns:
-        str: JSON status update + profile terbaru
+    Use this lightweight status update when accepting or deferring work. It changes no other
+    capability fields; use capability_upsert_self for the full profile or skill data.
     """
     try:
         room_id, self_agent_id = _require_capability_context()
-        payload = {
+        payload: dict[str, Any] = {
             "type": "capability_set_availability",
             "availability": params.availability,
         }
@@ -1752,13 +1779,16 @@ async def capability_set_availability(params: CapabilityAvailabilityInput) -> st
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="capability_remove_self")
+@mcp.tool(
+    name="capability_remove_self",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
+)
 async def capability_remove_self() -> str:
     """
-    Hapus capability card kustom agent ini dan kembali ke profil minimal room.
+    Delete this agent's custom capability profile and restore the minimal room profile.
 
-    Returns:
-        str: JSON status reset capability
+    Use only when intentionally resetting published skills, constraints, and capacity data.
+    This is destructive; use capability_upsert_self instead to preserve and edit selected fields.
     """
     try:
         room_id, self_agent_id = _require_capability_context()
@@ -1789,10 +1819,11 @@ async def capability_remove_self() -> str:
 @mcp.tool(name="task_offer")
 async def task_offer(params: TaskOfferInput) -> str:
     """
-    Tawarkan satu task delegasi ke agent tertentu pada room aktif.
+    Create a delegation offer for one active agent in the current room.
 
-    Returns:
-        str: JSON status offer + task terbaru
+    Use when the delegator has selected a recipient; the recipient can then use task_accept,
+    task_reject, or task_defer. This creates a new task offer, so do not retry it blindly after
+    an uncertain result; inspect task_get or task_list first.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_task_context()
@@ -1836,9 +1867,13 @@ async def task_offer(params: TaskOfferInput) -> str:
 
 
 @mcp.tool(name="task_accept")
-async def task_accept(params: TaskTransitionInput) -> str:
+async def task_accept(params: TaskAcceptInput) -> str:
     """
-    Terima delegation offer yang ditujukan ke agent ini.
+    Accept a pending delegation offer addressed to the active agent.
+
+    Use after reviewing an offer that this agent will perform. This changes the task status and
+    returns the updated manifest; use task_reject when the work cannot be taken, or task_defer
+    when it can be reconsidered later.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_task_context()
@@ -1872,7 +1907,10 @@ async def task_accept(params: TaskTransitionInput) -> str:
 @mcp.tool(name="task_reject")
 async def task_reject(params: TaskTransitionInput) -> str:
     """
-    Tolak delegation offer yang ditujukan ke agent ini.
+    Reject a pending delegation offer addressed to the active agent.
+
+    Use when this agent will not perform the task; the optional reason is recorded with the
+    transition. Use task_defer instead when the task may be accepted later.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_task_context()
@@ -1909,7 +1947,10 @@ async def task_reject(params: TaskTransitionInput) -> str:
 @mcp.tool(name="task_defer")
 async def task_defer(params: TaskDeferInput) -> str:
     """
-    Tunda delegation offer yang ditujukan ke agent ini.
+    Defer a pending delegation offer addressed to the active agent.
+
+    Use when the agent may reconsider the work later. The optional reason and ISO-8601
+    deferred_until hint are saved with the transition; use task_reject for a final refusal.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_task_context()
@@ -1945,10 +1986,16 @@ async def task_defer(params: TaskDeferInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="task_list")
+@mcp.tool(
+    name="task_list",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def task_list() -> str:
     """
-    Lihat daftar delegation task pada room aktif.
+    List delegation tasks in the active room without changing their state.
+
+    Use this to find a task ID or inspect the room's delegation queue. Use task_get when a
+    single task's full manifest is needed, and a transition tool only after selecting that task.
     """
     try:
         room_id, _, _ = _require_task_context()
@@ -1958,10 +2005,16 @@ async def task_list() -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="task_get")
+@mcp.tool(
+    name="task_get",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def task_get(params: TaskLookupInput) -> str:
     """
-    Baca satu delegation task dari room aktif.
+    Read one delegation task manifest from the active room without changing it.
+
+    Use after task_list or when an offer supplies a task ID, especially before choosing accept,
+    reject, or defer. Use task_list instead when the task ID is not known.
     """
     try:
         room_id, _, _ = _require_task_context()
@@ -1971,7 +2024,10 @@ async def task_get(params: TaskLookupInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="agent_register")
+@mcp.tool(
+    name="agent_register",
+    annotations=ToolAnnotations(idempotentHint=True),
+)
 async def agent_register(params: RegisterInput) -> str:
     """
     Daftarkan agent ke AgentLink. Wajib dipanggil pertama sebelum tools lain.
@@ -1999,20 +2055,16 @@ async def agent_register(params: RegisterInput) -> str:
 @mcp.tool(name="room_create")
 async def room_create(params: CreateRoomInput) -> str:
     """
-    Buat room baru di Cloudflare.
+    Create a new collaboration room on the Cloudflare relay.
 
-    Public: siapa saja bisa join dengan room_id.
-    Private: butuh room_id + token otomatis — bagikan ke peer.
-
-    Args:
-        params: name (nama room), is_private (True/False)
-    Returns:
-        str: JSON berisi room_id dan token (jika private)
+    Call after agent_register when starting a new group; choose is_private for a token-protected
+    room and securely share the returned token with intended peers. Use room_join, not this tool,
+    to enter an existing room.
     """
     try:
         if not stable_agent_identity_id:
             raise RuntimeError("Stable agent identity belum tersedia.")
-        async with http_session.post(f"{AGENTLINK_URL}/rooms",
+        async with _require_http_session().post(f"{AGENTLINK_URL}/rooms",
             json={
                 "name": params.name,
                 "is_private": params.is_private,
@@ -2026,14 +2078,11 @@ async def room_create(params: CreateRoomInput) -> str:
 @mcp.tool(name="room_join")
 async def room_join(params: JoinRoomInput) -> str:
     """
-    Join room yang sudah ada. Koneksi WebSocket ke Cloudflare terbentuk otomatis.
+    Join an existing room and open its Cloudflare WebSocket connection.
 
-    Public: cukup room_id. Private: butuh room_id + token dari owner.
-
-    Args:
-        params: room_id (6 karakter), token (opsional untuk private)
-    Returns:
-        str: JSON info room + daftar agent yang sudah ada
+    Call after agent_register; public rooms need only room_id, while private rooms require the
+    owner's token. Joining a different room closes the previous WebSocket and fails its pending
+    acknowledgements, so use room_info before replacing an active connection.
     """
     global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     rid = params.room_id.upper()
@@ -2076,13 +2125,16 @@ async def room_join(params: JoinRoomInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="room_leave")
+@mcp.tool(
+    name="room_leave",
+    annotations=ToolAnnotations(destructiveHint=True),
+)
 async def room_leave() -> str:
     """
-    Keluar dari room saat ini.
+    Leave the active room, close its WebSocket connection, and stop automatic reconnection.
 
-    Returns:
-        str: JSON status keluar
+    Use only to intentionally disconnect or before discarding the current session. This clears
+    the local retry queue for that room, so queued messages are not sent after leaving.
     """
     global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     if not current_room:
@@ -2102,16 +2154,19 @@ async def room_leave() -> str:
     return json.dumps({"success": True, "message": "Berhasil keluar dari room."})
 
 
-@mcp.tool(name="room_list")
+@mcp.tool(
+    name="room_list",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def room_list() -> str:
     """
-    Lihat daftar room public yang aktif di Cloudflare.
+    List active public rooms on the Cloudflare relay without joining any room.
 
-    Returns:
-        str: JSON daftar room
+    Use this to discover a public room ID before room_join. Private rooms are intentionally not
+    listed; their owners must share both the room ID and token directly.
     """
     try:
-        async with http_session.get(f"{AGENTLINK_URL}/rooms") as r:
+        async with _require_http_session().get(f"{AGENTLINK_URL}/rooms") as r:
             rooms = await r.json()
         return json.dumps({"success": True, "rooms": rooms, "count": len(rooms)}, indent=2)
     except Exception as e:
@@ -2121,10 +2176,10 @@ async def room_list() -> str:
 @mcp.tool(name="room_info")
 async def room_info() -> str:
     """
-    Info room saat ini: ID, status koneksi, agent ID.
+    Return connection, membership, and local retry-queue details for the active room.
 
-    Returns:
-        str: JSON info room
+    Use this before sending messages, leaving, or replacing a connection with room_join. It
+    refreshes local cache metadata but does not change the room's shared state.
     """
     if not current_room:
         return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
@@ -2139,9 +2194,10 @@ async def room_info() -> str:
 @mcp.tool(name="room_admin_add")
 async def room_admin_add(params: RoomAdminMutationInput) -> str:
     """
-    Jadikan agent aktif lain sebagai admin room saat ini.
+    Grant room-admin role to another agent currently active in the room.
 
-    Hanya owner room yang boleh menjalankan aksi ini.
+    Only the room owner can call this. Use it to delegate room administration; use
+    room_admin_remove to revoke the role, not room_leave or capability tools.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()
@@ -2169,12 +2225,16 @@ async def room_admin_add(params: RoomAdminMutationInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="room_admin_remove")
+@mcp.tool(
+    name="room_admin_remove",
+    annotations=ToolAnnotations(destructiveHint=True),
+)
 async def room_admin_remove(params: RoomAdminMutationInput) -> str:
     """
-    Cabut role admin dari agent aktif lain pada room saat ini.
+    Revoke the room-admin role from another active agent in the room.
 
-    Hanya owner room yang boleh menjalankan aksi ini.
+    Only the room owner can call this. This immediately removes the target's administrative
+    permission; use room_admin_add instead when granting or restoring that role.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()
@@ -2202,18 +2262,16 @@ async def room_admin_remove(params: RoomAdminMutationInput) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(name="room_local_summary")
+@mcp.tool(
+    name="room_local_summary",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def room_local_summary(params: LocalRoomSummaryInput) -> str:
     """
-    Baca snapshot ringkasan room dari cache lokal device ini.
+    Read a room summary from this device's local cache without contacting the relay.
 
-    Jika `room_id` kosong dan sedang join room, pakai room saat ini.
-    Jika `room_id` kosong dan sedang offline, kembalikan semua snapshot lokal yang tersedia.
-
-    Args:
-        params: room_id (opsional)
-    Returns:
-        str: JSON ringkasan snapshot lokal
+    With room_id, reads that room's snapshot; without it, reads the active room or, when offline,
+    lists all local snapshots. Use room_info for live connection state and room_join to refresh it.
     """
     room_id = params.room_id.upper() if params.room_id else None
     if room_id:
@@ -2229,12 +2287,11 @@ async def room_local_summary(params: LocalRoomSummaryInput) -> str:
 @mcp.tool(name="agent_send")
 async def agent_send(params: SendInput) -> str:
     """
-    Kirim pesan langsung ke satu peer via Cloudflare relay.
+    Send a direct message to one peer in the active room through the Cloudflare relay.
 
-    Args:
-        params: peer_id, message, msg_type ('text'/'data'/'command')
-    Returns:
-        str: JSON status pengiriman
+    Use for a single recipient; use agent_broadcast for all peers. An active room is required.
+    If the WebSocket is unavailable, delivery is unacknowledged, or the ACK times out, the message
+    is saved in this device's local retry queue and the response reports queued_for_retry.
     """
     payload = {"type": "send", "to": params.peer_id,
         "content": params.message, "msg_type": params.msg_type}
@@ -2287,12 +2344,11 @@ async def agent_send(params: SendInput) -> str:
 @mcp.tool(name="agent_broadcast")
 async def agent_broadcast(params: BroadcastInput) -> str:
     """
-    Kirim pesan ke semua agent di room via Cloudflare relay.
+    Send one message to all peers in the active room through the Cloudflare relay.
 
-    Args:
-        params: message, msg_type
-    Returns:
-        str: JSON status broadcast
+    Use for room-wide notices; use agent_send for one peer. An active room is required. If the
+    WebSocket is unavailable, no recipient is active, or the ACK times out, the broadcast is saved
+    in this device's local retry queue and the response reports queued_for_retry.
     """
     payload = {"type": "broadcast",
         "content": params.message, "msg_type": params.msg_type}
@@ -2345,12 +2401,11 @@ async def agent_broadcast(params: BroadcastInput) -> str:
 @mcp.tool(name="agent_read_inbox")
 async def agent_read_inbox(params: ReadInboxInput) -> str:
     """
-    Baca pesan masuk dan event room (join/leave).
+    Read locally cached incoming messages and room join or leave events.
 
-    Args:
-        params: limit (default 10), clear (hapus setelah dibaca)
-    Returns:
-        str: JSON daftar pesan dan event
+    Use only_unread to filter by the local read cursor. mark_read defaults to true and advances
+    that cursor; clear permanently removes cached inbox entries after reading. Use room_info for
+    connection state, not this tool.
     """
     room_last_read = _safe_int(current_room.get("last_read_sequence")) if current_room else 0
     visible_messages = inbox
@@ -2386,13 +2441,16 @@ async def agent_read_inbox(params: ReadInboxInput) -> str:
         "cache_path": current_room.get("local_cache_path") if current_room else None}, indent=2)
 
 
-@mcp.tool(name="agent_list")
+@mcp.tool(
+    name="agent_list",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def agent_list() -> str:
     """
-    Lihat info agent ini: ID, nama, room, status koneksi.
+    Read this local agent's identity, active-room reference, and connection status.
 
-    Returns:
-        str: JSON info agent
+    Use after agent_register to confirm local identity or when no active room is available.
+    Use room_info instead for detailed state of a currently joined room.
     """
     return json.dumps({"my_agent_id": agent_id, "my_name": agent_name,
         "client_session_id": client_session_id,
