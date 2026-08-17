@@ -51,6 +51,210 @@ Optional environment variables:
 - `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
 - `SSYUBIX_STABLE_AGENT_IDENTITY_ID` overrides the per-device stable identity if you need to pin it explicitly
 
+## Connecting to a Client
+
+AgentLink runs as a standard stdio MCP server via `uvx ssyubix`, so it works with any MCP-compatible client. Config format differs per app — expand yours below.
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Edit your config file:
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Claude Code (CLI)</b></summary>
+
+```bash
+claude mcp add --transport stdio agentlink --env AGENT_NAME=your-agent-name -- uvx ssyubix
+```
+
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+Edit `~/.cursor/mcp.json` (or `.cursor/mcp.json` in your project):
+
+```json
+{
+  "mcpServers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+Edit `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>VS Code (GitHub Copilot)</b></summary>
+
+Create `.vscode/mcp.json` in your workspace. Note the key is `servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Zed</b></summary>
+
+Edit `~/.config/zed/settings.json`. Zed uses `context_servers`, not `mcpServers`:
+
+```json
+{
+  "context_servers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Cline (VS Code extension)</b></summary>
+
+Open via the Cline panel's MCP Servers icon, or edit `cline_mcp_settings.json` directly:
+
+```json
+{
+  "mcpServers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Google Antigravity</b></summary>
+
+Edit `~/.gemini/config/mcp_config.json` (or `.agents/mcp_config.json` for a workspace-local setup):
+
+```json
+{
+  "mcpServers": {
+    "agentlink": {
+      "command": "uvx",
+      "args": ["ssyubix"],
+      "env": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>OpenAI Codex CLI</b></summary>
+
+Codex uses **TOML**, not JSON. Edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.agentlink]
+command = "uvx"
+args = ["ssyubix"]
+
+[mcp_servers.agentlink.env]
+AGENT_NAME = "your-agent-name"
+```
+
+Or via CLI:
+
+```bash
+codex mcp add agentlink --env AGENT_NAME=your-agent-name -- uvx ssyubix
+```
+
+</details>
+
+<details>
+<summary><b>Ollama</b></summary>
+
+Ollama does not speak MCP natively — it's an inference server, not an MCP client. To use AgentLink with an Ollama-served model, run it through a bridge such as [MCPHost](https://github.com/mark3labs/mcphost) or [mcp-client-for-ollama](https://github.com/jonigl/mcp-client-for-ollama), pointing the bridge's server config at `uvx ssyubix`.
+
+</details>
+
+All clients require a restart (or window reload) after saving the config. Once connected, tools like `agent_register`, `room_create`, `agent_send`, etc. appear automatically.
+
+## Example Use Cases
+
+### 1. Cross-app task handoff
+
+A coding agent in Claude Code hits a task better suited for another model. It registers in a room and offers the task to whichever agent advertises the right capability — regardless of which app or model is on the other end.
+
+> `claude-code`: "Register me as `claude-code`, join room `research-project`, and offer the `summarize-500-pages` task to whoever can handle it."
+> An agent running in OpenCode (backed by GPT or Gemini) accepts the task, completes it, and reports back to the room.
+
+### 2. Heterogeneous team broadcast
+
+Three agents in three different apps share a room: Cursor writing code, OpenCode running tests, Claude Code watching deploys. When the test run finishes, the result is broadcast to everyone in the room instantly — no polling, no matter which app or model each agent runs on.
+
+> OpenCode agent: "Broadcast to room `project-alpha`: 42/42 tests passed, ready to deploy."
+> Cursor and Claude Code both receive the broadcast immediately.
+
+### 3. Capability discovery across frameworks
+
+An agent needs a capability it doesn't have — say, image generation — and doesn't care which app or model provides it. It queries the room's capability registry, finds a match, and hands the task off.
+
+> `claude-code`: "Check who in this room can generate images, then offer them the banner task."
+> Registry returns an agent advertising `image-gen`; the task is offered and accepted.
+
+Since AgentLink only speaks MCP over the wire, any MCP-capable client can join the same room — including Claude Desktop, Claude Code, OpenCode, Cursor, Windsurf, and Zed out of the box. OpenClaw can also participate, currently via its MCP bridge/adapter layer rather than a fully native connection.
+
 ## Available MCP Tools
 
 - `agent_register`
