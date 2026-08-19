@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -46,6 +46,10 @@
     .panel + .panel { margin-top: 16px; }
     .panel h2 { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
     .panel .hint { font-size: 13px; color: #a1a1aa; line-height: 1.6; margin-bottom: 16px; }
+    .stats-note {
+      font-size: 12px; color: #71717a; line-height: 1.6;
+      margin: -8px 0 20px;
+    }
 
     .field { margin-bottom: 14px; }
     .field label {
@@ -192,36 +196,37 @@
   <div class="container">
     <header>
       <h1>Agent<span>Link</span></h1>
-      <p class="subtitle" id="subtitle">Semua room bersifat private — masuk dengan Room ID dan kunci</p>
+      <p class="subtitle" id="subtitle">Every room is private — enter with a Room ID and its key</p>
     </header>
 
     <!-- ══ Gate: statistik + form masuk ══ -->
     <div id="view-gate">
       <div class="stats">
         <div class="stat-card">
-          <div class="label" id="label-active">Room Aktif</div>
+          <div class="label" id="label-active">Active rooms</div>
           <div class="value active" id="stat-active">—</div>
         </div>
         <div class="stat-card">
-          <div class="label">Total Room</div>
+          <div class="label">Total rooms</div>
           <div class="value total" id="stat-total">—</div>
         </div>
         <div class="stat-card">
-          <div class="label">Agent di Room Aktif</div>
+          <div class="label">Agents in active rooms</div>
           <div class="value agents" id="stat-agents">—</div>
         </div>
       </div>
 
+      <p class="stats-note">
+        Each room reports its agent count a few seconds after someone joins or leaves,
+        so this figure can trail reality for a moment.
+      </p>
+
       <div class="panel">
-        <h2>Masuk ke room</h2>
+        <h2>Enter a room</h2>
         <p class="hint">
-          Tidak ada daftar room di halaman ini. Menampilkan ID room sama saja membocorkan
-          separuh kredensial join, jadi kamu perlu Room ID <strong>dan</strong> kunci yang
-          diberikan langsung oleh pemilik room.
-        </p>
-        <p class="hint">
-          Jumlah agent dilaporkan tiap room beberapa detik setelah ada yang masuk atau
-          keluar, jadi angkanya bisa tertinggal sesaat dari kondisi sebenarnya.
+          This page lists no rooms. Showing a room ID would give away half the join
+          credential, so you need the Room ID <strong>and</strong> the key handed to you
+          by the room's owner.
         </p>
 
         <div class="form-error" id="gate-error" hidden></div>
@@ -231,18 +236,21 @@
             <label for="input-room">Room ID</label>
             <input id="input-room" name="room" type="text" inputmode="latin"
                    maxlength="6" placeholder="ABC123" spellcheck="false" required>
-            <p class="note">6 karakter huruf/angka.</p>
+            <p class="note">Six letters or digits.</p>
           </div>
           <div class="field">
-            <label for="input-token">Kunci room</label>
+            <label for="input-token">Room key</label>
+            <!-- Placeholder tidak boleh berupa titik: di input password, karakter yang
+                 diketik juga dirender sebagai titik, jadi field kosong akan terlihat
+                 seperti sudah terisi. -->
             <input id="input-token" name="token" type="password"
-                   placeholder="••••••••••••" spellcheck="false" required>
+                   placeholder="key from the room owner" spellcheck="false" required>
             <p class="note">
-              Disimpan di sessionStorage — hilang begitu tab ditutup, dan dikirim lewat
-              header, bukan URL.
+              Held in sessionStorage — gone once the tab closes — and sent as a header
+              rather than in the URL.
             </p>
           </div>
-          <button class="primary" type="submit" id="gate-submit">Masuk</button>
+          <button class="primary" type="submit" id="gate-submit">Enter</button>
         </form>
       </div>
 
@@ -258,18 +266,18 @@
         </div>
         <div>
           <button type="button" id="btn-refresh">↻ Refresh</button>
-          <button type="button" id="btn-leave">Keluar</button>
+          <button type="button" id="btn-leave">Leave</button>
         </div>
       </div>
 
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-lobby"  aria-selected="true"  data-tab="lobby">Lobby</button>
-        <button class="tab" role="tab" id="tab-tasks"  aria-selected="false" data-tab="tasks">Pekerjaan</button>
+        <button class="tab" role="tab" id="tab-tasks"  aria-selected="false" data-tab="tasks">Tasks</button>
         <button class="tab" role="tab" id="tab-skills" aria-selected="false" data-tab="skills">Skills</button>
       </div>
 
       <div id="tab-content" role="tabpanel" aria-labelledby="tab-lobby">
-        <div class="loading">Memuat...</div>
+        <div class="loading">Loading…</div>
       </div>
     </div>
 
@@ -302,7 +310,7 @@
       if (!iso) return '—';
       var t = new Date(iso).getTime();
       if (!isFinite(t)) return '—';
-      return new Date(t).toLocaleString('id-ID', {
+      return new Date(t).toLocaleString('en-GB', {
         day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
       });
     }
@@ -313,11 +321,12 @@
       if (!isFinite(t)) return '—';
       var diff = Date.now() - t;
       var mins = Math.floor(diff / 60000);
-      if (mins < 1) return 'baru saja';
-      if (mins < 60) return mins + ' menit lalu';
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + (mins === 1 ? ' minute ago' : ' minutes ago');
       var hrs = Math.floor(mins / 60);
-      if (hrs < 24) return hrs + ' jam lalu';
-      return Math.floor(hrs / 24) + ' hari lalu';
+      if (hrs < 24) return hrs + (hrs === 1 ? ' hour ago' : ' hours ago');
+      var days = Math.floor(hrs / 24);
+      return days + (days === 1 ? ' day ago' : ' days ago');
     }
 
     // Kunci dikirim sebagai header supaya tidak masuk history / Referer / log akses.
@@ -361,17 +370,17 @@
       return fetch('/rooms', { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function (s) {
-          if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('format tidak valid');
+          if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('unexpected response shape');
           var days = Number(s.window_days) || 3;
           $('stat-active').textContent = Number(s.active_room_count) || 0;
           $('stat-total').textContent = Number(s.total_room_count) || 0;
           $('stat-agents').textContent = Number(s.total_agent_count) || 0;
-          $('label-active').textContent = 'Room Aktif (' + days + ' hari)';
+          $('label-active').textContent = 'Active rooms (' + days + ' days)';
           $('last-updated').textContent =
-            'Statistik diperbarui: ' + new Date().toLocaleTimeString('id-ID');
+            'Stats updated: ' + new Date().toLocaleTimeString('en-GB');
         })
         .catch(function (err) {
-          $('last-updated').textContent = 'Statistik gagal dimuat: ' + err.message;
+          $('last-updated').textContent = 'Could not load stats: ' + err.message;
         });
     }
 
@@ -392,14 +401,14 @@
           saveSession(session);
           showGateError('');
           renderRoom();
-          say('Berhasil masuk ke room ' + roomId + '.');
+          say('Entered room ' + roomId + '.');
         })
         .catch(function (err) {
           session = prev;
           if (err.status === 403) {
-            throw new Error('Room ID atau kunci salah.');
+            throw new Error('Room ID or key is wrong.');
           }
-          throw new Error('Gagal masuk: ' + err.message);
+          throw new Error('Could not enter: ' + err.message);
         });
     }
 
@@ -411,10 +420,10 @@
       stopPolling();
       $('view-room').hidden = true;
       $('view-gate').hidden = false;
-      $('subtitle').textContent = 'Semua room bersifat private — masuk dengan Room ID dan kunci';
+      $('subtitle').textContent = 'Every room is private — enter with a Room ID and its key';
       $('input-token').value = '';
       loadStats();
-      say('Sudah keluar dari room.');
+      say('Left the room.');
     }
 
     // ── Render: kerangka room ────────────────────────────────────────────────
@@ -422,7 +431,7 @@
       $('view-gate').hidden = true;
       $('view-room').hidden = false;
       $('room-id-label').textContent = session.room_id;
-      $('subtitle').textContent = 'Room private — data hanya terlihat karena kunci yang kamu masukkan';
+      $('subtitle').textContent = 'Private room — visible only because of the key you supplied';
       syncTabs();
       renderActiveTab();
       startPolling();
@@ -447,7 +456,7 @@
     function setBody(html) { $('tab-content').innerHTML = html; }
 
     function renderActiveTab() {
-      setBody('<div class="loading">Memuat...</div>');
+      setBody('<div class="loading">Loading&hellip;</div>');
       if (detail && detail.kind === 'agent') return renderAgentDetail(detail.id);
       if (detail && detail.kind === 'task') return renderTaskDetail(detail.id);
       if (activeTab === 'lobby') return renderLobby();
@@ -459,10 +468,10 @@
       if (err.status === 403) {
         // Kunci dicabut atau room dirotasi saat halaman terbuka.
         leaveRoom();
-        showGateError('Kunci room tidak berlaku lagi. Masuk ulang dengan kunci terbaru.');
+        showGateError('That room key is no longer valid. Enter again with the current key.');
         return;
       }
-      setBody('<div class="error-state">Gagal memuat: ' + esc(err.message) + '</div>');
+      setBody('<div class="error-state">Could not load: ' + esc(err.message) + '</div>');
     }
 
     // ── Lobby: daftar agent ──────────────────────────────────────────────────
@@ -476,26 +485,28 @@
         .then(function (data) {
           var agents = Array.isArray(data.agents) ? data.agents : [];
           $('room-sub').textContent =
-            agents.length + ' agent · diperbarui ' + timeAgo(data.updated_at);
+            agents.length + (agents.length === 1 ? ' agent' : ' agents') + ' · updated ' + timeAgo(data.updated_at);
 
           if (!agents.length) {
-            setBody('<div class="empty-state">Belum ada agent di room ini.</div>');
-            say('Lobby kosong.');
+            setBody('<div class="empty-state">No agents in this room yet.</div>');
+            say('Lobby is empty.');
             return;
           }
 
           var online = agents.filter(function (a) { return a.presence === 'online'; }).length;
-          var html = '<p class="section-label">' + online + ' dari ' + agents.length +
-                     ' agent sedang online</p>';
+          var html = '<p class="section-label">' + online + ' of ' + agents.length +
+                     ' agents online</p>';
 
           html += agents.map(function (a) {
             var load = a.current_load == null ? 0 : a.current_load;
             var max = a.max_concurrent_tasks;
-            var loadText = max == null ? (load + ' tugas') : (load + ' / ' + max + ' tugas');
+            var loadText = max == null
+              ? (load + (load === 1 ? ' task' : ' tasks'))
+              : (load + ' / ' + max + ' tasks');
             var skillCount = Array.isArray(a.skills) ? a.skills.length : 0;
             return '' +
               '<button class="card" type="button" data-agent="' + esc(a.agent_id) + '"' +
-                ' aria-label="Lihat detail agent ' + esc(a.display_name || a.agent_id) + '">' +
+                ' aria-label="View details for agent ' + esc(a.display_name || a.agent_id) + '">' +
                 '<div class="card-head">' +
                   '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
                   '<span>' +
@@ -507,7 +518,7 @@
                 '</div>' +
                 '<div class="card-meta">' +
                   '<span class="mono">' + esc(a.agent_id) + '</span>' +
-                  '<span>🧠 ' + skillCount + ' skill</span>' +
+                  '<span>🧠 ' + skillCount + (skillCount === 1 ? ' skill' : ' skills') + '</span>' +
                   '<span>📊 ' + esc(loadText) + '</span>' +
                   '<span>👁 ' + esc(timeAgo(a.last_seen_at)) + '</span>' +
                 '</div>' +
@@ -515,7 +526,7 @@
           }).join('');
 
           setBody(html);
-          say('Lobby: ' + agents.length + ' agent, ' + online + ' online.');
+          say('Lobby: ' + agents.length + ' agents, ' + online + ' online.');
         })
         .catch(onLoadError);
     }
@@ -526,9 +537,9 @@
           '/agents/' + encodeURIComponent(agentId))
         .then(function (data) {
           var a = data.agent;
-          if (!a) { setBody('<div class="empty-state">Agent tidak ditemukan.</div>'); return; }
+          if (!a) { setBody('<div class="empty-state">Agent not found.</div>'); return; }
 
-          var html = '<div class="backlink"><button type="button" data-back="lobby">← Kembali ke lobby</button></div>';
+          var html = '<div class="backlink"><button type="button" data-back="lobby">← Back to lobby</button></div>';
           html += '<div class="panel">';
           html += '<div class="card-head">' +
                     '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
@@ -544,32 +555,32 @@
 
           html += '<dl class="kv">' +
             '<dt>Agent ID</dt><dd class="mono">' + esc(a.agent_id) + '</dd>' +
-            '<dt>Identitas stabil</dt><dd class="mono">' + esc(a.stable_agent_identity_id || '—') + '</dd>' +
-            '<dt>Beban kerja</dt><dd>' + esc(a.current_load == null ? 0 : a.current_load) +
-              (a.max_concurrent_tasks == null ? ' (tanpa batas)' : ' dari ' + esc(a.max_concurrent_tasks)) + '</dd>' +
-            '<dt>Bergabung</dt><dd>' + esc(fmtDate(a.joined_at)) + '</dd>' +
-            '<dt>Terakhir terlihat</dt><dd>' + esc(fmtDate(a.last_seen_at)) + ' (' + esc(timeAgo(a.last_seen_at)) + ')</dd>' +
-            '<dt>Verifikasi</dt><dd>' + esc(a.verification || '—') + '</dd>' +
+            '<dt>Stable identity</dt><dd class="mono">' + esc(a.stable_agent_identity_id || '—') + '</dd>' +
+            '<dt>Workload</dt><dd>' + esc(a.current_load == null ? 0 : a.current_load) +
+              (a.max_concurrent_tasks == null ? ' (no limit)' : ' of ' + esc(a.max_concurrent_tasks)) + '</dd>' +
+            '<dt>Joined</dt><dd>' + esc(fmtDate(a.joined_at)) + '</dd>' +
+            '<dt>Last seen</dt><dd>' + esc(fmtDate(a.last_seen_at)) + ' (' + esc(timeAgo(a.last_seen_at)) + ')</dd>' +
+            '<dt>Verification</dt><dd>' + esc(a.verification || '—') + '</dd>' +
           '</dl>';
 
           var tools = Array.isArray(a.tool_access) ? a.tool_access : [];
           html += '<p class="section-label">Tool access (' + tools.length + ')</p>';
           html += tools.length
             ? tools.map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join('')
-            : '<p class="hint">Tidak ada yang dideklarasikan.</p>';
+            : '<p class="hint">None declared.</p>';
 
           var cons = Array.isArray(a.constraints) ? a.constraints : [];
           html += '<p class="section-label">Constraints (' + cons.length + ')</p>';
           html += cons.length
             ? cons.map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('')
-            : '<p class="hint">Tidak ada yang dideklarasikan.</p>';
+            : '<p class="hint">None declared.</p>';
 
           html += '</div>';
 
           var skills = Array.isArray(a.skills) ? a.skills : [];
           html += '<p class="section-label">Skills (' + skills.length + ')</p>';
           if (!skills.length) {
-            html += '<div class="empty-state">Agent ini belum mendaftarkan skill.</div>';
+            html += '<div class="empty-state">This agent has not registered any skills.</div>';
           } else {
             html += skills.map(function (s) {
               var tags = Array.isArray(s.tags) ? s.tags : [];
@@ -587,7 +598,7 @@
           }
 
           setBody(html);
-          say('Detail agent ' + (a.display_name || a.agent_id) + '.');
+          say('Details for agent ' + (a.display_name || a.agent_id) + '.');
         })
         .catch(onLoadError);
     }
@@ -597,10 +608,10 @@
     // ditunda). Tidak ada status "selesai", jadi progres ditampilkan sebagai
     // tahap siklus, bukan persentase penyelesaian yang tidak punya data.
     var STATUS_LABEL = {
-      waiting_for_acceptance: 'Menunggu jawaban',
-      accepted: 'Diterima',
-      rejected: 'Ditolak',
-      deferred: 'Ditunda'
+      waiting_for_acceptance: 'Awaiting reply',
+      accepted: 'Accepted',
+      rejected: 'Rejected',
+      deferred: 'Deferred'
     };
     var STATUS_CLASS = {
       waiting_for_acceptance: 'waiting',
@@ -640,20 +651,20 @@
     function stageTrack(status) {
       var mid, last;
       if (status === 'accepted') {
-        mid = '<span class="step done">Diterima</span>';
-        last = '<span class="step current">Dikerjakan</span>';
+        mid = '<span class="step done">Accepted</span>';
+        last = '<span class="step current">In progress</span>';
       } else if (status === 'rejected') {
-        mid = '<span class="step failed">Ditolak</span>';
-        last = '<span class="step">Dikerjakan</span>';
+        mid = '<span class="step failed">Rejected</span>';
+        last = '<span class="step">In progress</span>';
       } else if (status === 'deferred') {
-        mid = '<span class="step current">Ditunda</span>';
-        last = '<span class="step">Dikerjakan</span>';
+        mid = '<span class="step current">Deferred</span>';
+        last = '<span class="step">In progress</span>';
       } else {
-        mid = '<span class="step current">Menunggu jawaban</span>';
-        last = '<span class="step">Dikerjakan</span>';
+        mid = '<span class="step current">Awaiting reply</span>';
+        last = '<span class="step">In progress</span>';
       }
       return '<div class="stage">' +
-             '<span class="step done">Ditawarkan</span><span class="arrow">→</span>' +
+             '<span class="step done">Offered</span><span class="arrow">→</span>' +
              mid + '<span class="arrow">→</span>' + last +
              '</div>';
     }
@@ -663,21 +674,21 @@
         .then(function (data) {
           var tasks = Array.isArray(data.tasks) ? data.tasks : [];
           if (!tasks.length) {
-            setBody('<div class="empty-state">Belum ada pekerjaan yang didelegasikan di room ini.</div>');
-            say('Tidak ada pekerjaan.');
+            setBody('<div class="empty-state">No work has been delegated in this room yet.</div>');
+            say('No tasks.');
             return;
           }
 
-          var html = '<p class="section-label">Rincian pekerjaan (' + tasks.length + ')</p>';
+          var html = '<p class="section-label">Delegated work (' + tasks.length + ')</p>';
           html += progressBar(tasks);
           html += '<p class="hint" style="margin:12px 0 16px">' +
-                  'Progres di atas adalah tahap penerimaan delegasi. Relay belum merekam ' +
-                  'status penyelesaian, jadi tidak ada persentase "selesai".</p>';
+                  'The bars above track how delegation offers were answered. The relay records no ' +
+                  'completion status, so there is no "done" percentage.</p>';
 
           html += tasks.map(function (t) {
             return '' +
               '<button class="card" type="button" data-task="' + esc(t.task_id) + '"' +
-                ' aria-label="Lihat detail pekerjaan ' + esc(t.title || t.task_id) + '">' +
+                ' aria-label="View details for task ' + esc(t.title || t.task_id) + '">' +
                 '<div class="card-head">' +
                   '<span class="card-title">' + esc(t.title || t.task_id) + '</span>' +
                   '<span>' + statusBadge(t.status) + ' ' + priorityBadge(t.priority) + '</span>' +
@@ -690,7 +701,7 @@
           }).join('');
 
           setBody(html);
-          say(tasks.length + ' pekerjaan dimuat.');
+          say(tasks.length + ' tasks loaded.');
         })
         .catch(onLoadError);
     }
@@ -699,9 +710,9 @@
       api('/tasks/' + encodeURIComponent(session.room_id) + '/' + encodeURIComponent(taskId))
         .then(function (data) {
           var t = data.task;
-          if (!t) { setBody('<div class="empty-state">Pekerjaan tidak ditemukan.</div>'); return; }
+          if (!t) { setBody('<div class="empty-state">Task not found.</div>'); return; }
 
-          var html = '<div class="backlink"><button type="button" data-back="tasks">← Kembali ke daftar pekerjaan</button></div>';
+          var html = '<div class="backlink"><button type="button" data-back="tasks">← Back to task list</button></div>';
           html += '<div class="panel">';
           html += '<div class="card-head">' +
                     '<span class="card-title">' + esc(t.title || t.task_id) + '</span>' +
@@ -711,26 +722,26 @@
 
           html += '<dl class="kv">' +
             '<dt>Task ID</dt><dd class="mono">' + esc(t.task_id) + '</dd>' +
-            '<dt>Didelegasikan oleh</dt><dd>' + esc(t.delegated_by || '—') + '</dd>' +
-            '<dt>Ditawarkan ke</dt><dd>' + esc(t.offered_to_agent_id || '—') + '</dd>' +
-            '<dt>Penanggung jawab</dt><dd>' + esc(t.responsible_agent_id || 'belum ada') + '</dd>' +
-            '<dt>Kontak</dt><dd>' + esc(t.point_of_contact_agent_id || '—') + '</dd>' +
-            '<dt>Dibuat</dt><dd>' + esc(fmtDate(t.created_at)) + '</dd>' +
-            '<dt>Diperbarui</dt><dd>' + esc(fmtDate(t.updated_at)) + ' (' + esc(timeAgo(t.updated_at)) + ')</dd>' +
-            '<dt>Alasan jawaban</dt><dd>' + esc(t.response_reason || '—') + '</dd>' +
-            '<dt>Ditunda sampai</dt><dd>' + esc(t.deferred_until ? fmtDate(t.deferred_until) : '—') + '</dd>' +
-            '<dt>Lease sampai</dt><dd>' + esc(t.lease_until ? fmtDate(t.lease_until) : '—') + '</dd>' +
+            '<dt>Delegated by</dt><dd>' + esc(t.delegated_by || '—') + '</dd>' +
+            '<dt>Offered to</dt><dd>' + esc(t.offered_to_agent_id || '—') + '</dd>' +
+            '<dt>Responsible</dt><dd>' + esc(t.responsible_agent_id || 'nobody yet') + '</dd>' +
+            '<dt>Point of contact</dt><dd>' + esc(t.point_of_contact_agent_id || '—') + '</dd>' +
+            '<dt>Created</dt><dd>' + esc(fmtDate(t.created_at)) + '</dd>' +
+            '<dt>Updated</dt><dd>' + esc(fmtDate(t.updated_at)) + ' (' + esc(timeAgo(t.updated_at)) + ')</dd>' +
+            '<dt>Response reason</dt><dd>' + esc(t.response_reason || '—') + '</dd>' +
+            '<dt>Deferred until</dt><dd>' + esc(t.deferred_until ? fmtDate(t.deferred_until) : '—') + '</dd>' +
+            '<dt>Lease until</dt><dd>' + esc(t.lease_until ? fmtDate(t.lease_until) : '—') + '</dd>' +
           '</dl>';
 
           var watchers = Array.isArray(t.watcher_ids) ? t.watcher_ids : [];
-          html += '<p class="section-label">Watcher (' + watchers.length + ')</p>';
+          html += '<p class="section-label">Watchers (' + watchers.length + ')</p>';
           html += watchers.length
             ? watchers.map(function (w) { return '<span class="chip">' + esc(w) + '</span>'; }).join('')
-            : '<p class="hint">Tidak ada.</p>';
+            : '<p class="hint">None.</p>';
 
           html += '</div>';
           setBody(html);
-          say('Detail pekerjaan ' + (t.title || t.task_id) + '.');
+          say('Details for task ' + (t.title || t.task_id) + '.');
         })
         .catch(onLoadError);
     }
@@ -741,12 +752,12 @@
         .then(function (data) {
           var skills = Array.isArray(data.skills) ? data.skills : [];
           if (!skills.length) {
-            setBody('<div class="empty-state">Belum ada skill yang didaftarkan di room ini.</div>');
-            say('Tidak ada skill.');
+            setBody('<div class="empty-state">No skills registered in this room yet.</div>');
+            say('No skills.');
             return;
           }
 
-          var html = '<p class="section-label">Skill tersedia (' + skills.length + ')</p>';
+          var html = '<p class="section-label">Available skills (' + skills.length + ')</p>';
           html += skills.map(function (s) {
             var agents = Array.isArray(s.agents) ? s.agents : [];
             var body = '<div class="card">' +
@@ -755,7 +766,9 @@
                 '<span class="mono">' + esc(s.skill_id) + '</span>' +
               '</div>';
             if (s.description) body += '<p class="hint">' + esc(s.description) + '</p>';
-            body += '<div class="card-meta"><span>👥 ' + (s.agent_count || agents.length) + ' agent</span></div>';
+            var providerCount = s.agent_count || agents.length;
+            body += '<div class="card-meta"><span>👥 ' + providerCount +
+                    (providerCount === 1 ? ' agent' : ' agents') + '</span></div>';
             if (agents.length) {
               body += '<div style="margin-top:10px">' + agents.map(function (a) {
                 return '<span class="chip">' + esc(a.display_name || a.agent_id) +
@@ -766,7 +779,7 @@
           }).join('');
 
           setBody(html);
-          say(skills.length + ' skill dimuat.');
+          say(skills.length + ' skills loaded.');
         })
         .catch(onLoadError);
     }
@@ -789,21 +802,21 @@
       var roomId = $('input-room').value.trim().toUpperCase();
       var token = $('input-token').value;
       if (!/^[A-Z0-9]{6}$/.test(roomId)) {
-        showGateError('Room ID harus 6 karakter huruf atau angka.');
+        showGateError('Room ID must be six letters or digits.');
         return;
       }
-      if (!token) { showGateError('Kunci room wajib diisi.'); return; }
+      if (!token) { showGateError('The room key is required.'); return; }
 
       var btn = $('gate-submit');
       btn.disabled = true;
-      btn.textContent = 'Memeriksa...';
+      btn.textContent = 'Checking…';
       showGateError('');
 
       enterRoom(roomId, token)
         .catch(function (err) { showGateError(err.message); })
         .then(function () {
           btn.disabled = false;
-          btn.textContent = 'Masuk';
+          btn.textContent = 'Enter';
         });
     });
 
