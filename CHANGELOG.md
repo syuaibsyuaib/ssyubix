@@ -10,6 +10,10 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Added `POST /admin/prune-rooms` for deleting registry entries of rooms left unjoinable by the move to private-only rooms. It is disabled unless the `REGISTRY_ADMIN_TOKEN` secret is set, requires that token in an `X-Admin-Token` header, defaults to a dry run, and can only delete rooms that have no join token
 
+### Fixed
+
+- Room durable objects now report their active agent count to the registry, so `total_agent_count` in `GET /rooms` and on the dashboard reflects reality. The field existed on the stored room since the original dashboard but was never written, so the number was always zero. Reports carry an absolute count rather than a delta, ride the existing debounced checkpoint alarm rather than the join path, and are skipped entirely when the count has not changed
+
 ## [3.0.0] - 2026-08-19
 
 Every room is now private. Joining requires the room ID plus the join key its owner
