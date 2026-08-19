@@ -22,6 +22,18 @@ export interface RoomActivityStats {
   generated_at: string;
 }
 
+/**
+ * Room warisan mode publik tersimpan tanpa token join, sehingga tidak punya
+ * kunci yang bisa diverifikasi. Registry menolaknya, jadi room seperti ini
+ * permanen tidak bisa dimasuki dan aman dibuang.
+ *
+ * Sengaja hanya token yang diperiksa: umur room, nama, dan kepemilikan tidak
+ * boleh ikut menentukan, supaya tidak ada room hidup yang ikut terhapus.
+ */
+export function isUnjoinableRoom(room: Pick<StoredRoomMeta, "token">): boolean {
+  return typeof room.token !== "string" || room.token.length === 0;
+}
+
 /** Room dihitung "aktif" bila dibuat dalam rentang hari ini. */
 export const ROOM_ACTIVITY_WINDOW_DAYS = 3;
 
