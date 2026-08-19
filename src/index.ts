@@ -155,6 +155,12 @@ interface RoomSessionCheckpointManifest {
 }
 
 const ROOM_SESSION_CHECKPOINTS_KEY = "room:session-checkpoints";
+/**
+ * Room DO tidak tahu ID-nya sendiri di luar konteks request, padahal alarm perlu
+ * tahu room mana yang dilaporkan — termasuk saat agent terakhir sudah keluar dan
+ * tidak ada WebSocket tersisa untuk dibaca.
+ */
+const ROOM_ID_KEY = "room:id";
 
 // ─── Worker Entry ─────────────────────────────────────────────────────────────
 
@@ -434,6 +440,9 @@ export class AgentLinkRoom extends DurableObject {
   private readonly env: Env;
   private sequenceCounter: number | null = null;
   private lastHydratedAt: string | null = null;
+  private roomIdCache: string | null = null;
+  /** Jumlah agent yang terakhir dikirim ke registry; null artinya belum pernah. */
+  private lastReportedAgentCount: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -501,6 +510,9 @@ export class AgentLinkRoom extends DurableObject {
     });
     this.closeDuplicateSessions(server, sessionId);
     await this.upsertCapabilityState(state);
+    await this.rememberRoomId(roomId);
+    // Jangan lapor di sini: biarkan alarm yang melakukannya supaya join tetap cepat.
+    await this.scheduleTransientCheckpoint(now);
 
     const joinSequence = await this.nextSequence();
     const heartbeat = buildHeartbeatConfig();
@@ -1134,6 +1146,8 @@ export class AgentLinkRoom extends DurableObject {
       force: true,
     });
     await this.upsertCapabilityState(offlineState);
+    // Agent keluar mengubah jumlah; alarm yang akan melaporkannya (ter-debounce).
+    await this.scheduleTransientCheckpoint(timestamp);
     const sequence = await this.nextSequence();
 
     // Broadcast ke semua: ada yang leave
@@ -1159,6 +1173,7 @@ export class AgentLinkRoom extends DurableObject {
   async alarm(): Promise<void> {
     const now = new Date().toISOString();
     await this.flushTransientSessionCheckpoints(now);
+    await this.reportAgentCountIfChanged();
   }
 
   private async getCurrentSequence(): Promise<number> {
@@ -1215,6 +1230,61 @@ export class AgentLinkRoom extends DurableObject {
     return this.env.AGENTLINK_REGISTRY.get(
       this.env.AGENTLINK_REGISTRY.idFromName("global"),
     );
+  }
+
+  /** Simpan ID room sekali saja, supaya alarm bisa melapor tanpa WebSocket aktif. */
+  private async rememberRoomId(roomId: string): Promise<void> {
+    if (this.roomIdCache === roomId) {
+      return;
+    }
+    this.roomIdCache = roomId;
+    const stored = await this.ctx.storage.get<string>(ROOM_ID_KEY);
+    if (stored !== roomId) {
+      await this.ctx.storage.put(ROOM_ID_KEY, roomId);
+    }
+  }
+
+  private async resolveRoomId(): Promise<string | null> {
+    if (this.roomIdCache) {
+      return this.roomIdCache;
+    }
+    const stored = await this.ctx.storage.get<string>(ROOM_ID_KEY);
+    this.roomIdCache = stored ?? null;
+    return this.roomIdCache;
+  }
+
+  /**
+   * Laporkan jumlah agent aktif ke registry, tapi hanya bila berubah sejak laporan
+   * terakhir — room yang alarmnya menyala untuk urusan lain tidak menulis apa-apa.
+   *
+   * Dipanggil dari alarm, bukan dari jalur join/leave, supaya debounce 5 detik yang
+   * sudah ada yang membatasi lajunya dan join tidak ikut melambat.
+   */
+  private async reportAgentCountIfChanged(): Promise<void> {
+    const roomId = await this.resolveRoomId();
+    if (!roomId) {
+      return;
+    }
+
+    const count = this.listActiveAgents().length;
+    if (this.lastReportedAgentCount === count) {
+      return;
+    }
+
+    try {
+      await this.getRegistryStub().fetch(new Request(
+        "http://internal/set-agent-count",
+        {
+          method: "POST",
+          body: JSON.stringify({ room_id: roomId, agent_count: count }),
+        },
+      ));
+      this.lastReportedAgentCount = count;
+    } catch (error) {
+      // Angka dashboard tidak boleh menghambat room. Biarkan lastReported apa adanya
+      // supaya laporan berikutnya mencoba lagi.
+      console.error("Gagal melaporkan agent_count ke registry:", error);
+    }
   }
 
   private async loadRoomMeta(roomId: string): Promise<RoomMeta | null> {
@@ -1907,6 +1977,32 @@ export class AgentLinkRegistry extends DurableObject {
       };
       await this.ctx.storage.put(`room:${room.room_id}`, room);
       return Response.json({ ok: true });
+    }
+
+    // Room melaporkan jumlah agent aktifnya. Nilai absolut, bukan selisih, supaya
+    // laporan berikutnya selalu mengoreksi yang sebelumnya dan galat tidak menumpuk.
+    if (action === "set-agent-count" && request.method === "POST") {
+      const body = await request.json() as { room_id?: string; agent_count?: number };
+      const roomId = typeof body.room_id === "string" ? body.room_id : "";
+      const count = body.agent_count;
+      if (!roomId || !Number.isInteger(count) || (count as number) < 0) {
+        return Response.json(
+          { ok: false, error: "room_id dan agent_count (bilangan bulat >= 0) wajib." },
+          { status: 400 },
+        );
+      }
+
+      const room = await this.ctx.storage.get<RoomMeta>(`room:${roomId}`);
+      if (!room) {
+        // Room sudah dihapus (mis. lewat prune). Bukan error yang perlu diulang.
+        return Response.json({ ok: true, room_missing: true });
+      }
+      if (room.agent_count === count) {
+        return Response.json({ ok: true, unchanged: true });
+      }
+
+      await this.ctx.storage.put(`room:${roomId}`, { ...room, agent_count: count });
+      return Response.json({ ok: true, agent_count: count });
     }
 
     if (action === "room") {
