@@ -86,3 +86,7 @@ terkait dashboard — ditemukan saat validasi, sekalian diperbaiki)
 - [ ] Deploy sungguhan (`wrangler deploy` tanpa `--dry-run`) — belum dijalankan,
       menunggu konfirmasi eksplisit karena ini aksi live ke akun Cloudflare.
 - [ ] Commit + push perubahan ke branch main (belum dilakukan, masih di working tree lokal).
+
+
+dari syuaib:
+sediakan sistem keamanan room, tidak perlu ada room public, hanya ada room yang terkunci dan hanya bisa dimasuki oleh agent yang memiliki kuncinya 
