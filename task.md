@@ -207,6 +207,51 @@ agent di room, terbagi jadi beberapa bagian dengan lobby sebagai default.
   bukan persentase penyelesaian. Kalau ingin progres pengerjaan sungguhan, relay perlu
   status baru (mis. `in_progress`, `done`) — belum ada.
 
+## Sudah dikerjakan
+- [x] Commit + push (3 commit) dan [PR #47](https://github.com/syuaibsyuaib/ssyubix/pull/47) — sudah di-merge.
+- [x] Bump versi ke **3.0.0** dan publish ke PyPI lewat tag `v3.0.0`
+      (Trusted Publishing/OIDC, tanpa API token). Diverifikasi dengan mengunduh
+      wheel dari PyPI: `room_list` hilang, `is_private` hilang, token wajib.
+- [x] Deploy Worker ke production (versi `7267a4ec`, dari branch atas persetujuan user).
+
+---
+
+# Task: Bersihkan room mati warisan mode publik
+
+**Tujuan:** Buang entri registry untuk room yang sudah tidak bisa dimasuki siapa pun
+setelah semua room jadi private.
+
+## Yang dibangun
+- [x] `isUnjoinableRoom()` di `room-meta.ts` — **hanya** memeriksa token, sengaja
+      mengabaikan umur/nama/kepemilikan supaya tidak ada room hidup yang terjaring.
+- [x] Aksi `prune-unjoinable` di registry DO, hapus di-chunk 128 key (batas storage).
+- [x] `POST /admin/prune-rooms` dengan tiga lapis pengaman:
+      404 bila `REGISTRY_ADMIN_TOKEN` tidak diset · butuh header `X-Admin-Token`
+      (dibanding waktu-konstan) · **default dry-run**, hapus hanya dengan `confirm=true`.
+- [x] 2 test baru (total Worker 40/40).
+
+## Hasil di production (19 Agu 2026)
+| | |
+|---|---|
+| Sebelum | 104 room |
+| Terdeteksi mati (tanpa token) | **65** |
+| Dipertahankan (punya token) | **39** |
+| Terhapus | **65** |
+| Sesudah | **39 room** |
+
+Verifikasi: `total_room_count` 104 → 39; room sampel (`24X3YH`, `44BVG2`, `9BEEPE`)
+balas "tidak ditemukan"; `active_room_count` tetap 1 — room bertoken yang dibuat hari
+itu **selamat**, bukti room hidup tidak ikut terhapus.
+
+## Catatan
+- **Storage Durable Object milik 65 room itu tidak ikut terhapus** — hanya entri
+  registry. Isinya (pesan, capability, task) jadi yatim: tidak bisa dijangkau, tapi
+  masih ada. Untuk membersihkannya perlu tiap room DO menghapus isinya sendiri.
+- Endpoint `/admin/prune-rooms` sengaja dibiarkan hidup (keputusan user), terkunci secret.
+
 ## Belum dikerjakan
-- [ ] Commit perubahan (masih di working tree).
-- [ ] Bump versi paket Python + deploy Worker — aksi live, menunggu konfirmasi.
+- [ ] [PR #48](https://github.com/syuaibsyuaib/ssyubix/pull/48) (CI Node 22) belum di-merge — CI di `main` masih merah.
+- [ ] Commit prune (`d1d2254`) belum masuk `main`; production menjalankan kode branch.
+- [ ] **Bug `agent_count`** (pre-existing, sejak commit dashboard `11234c9`): field tidak
+      pernah ditulis ke registry, jadi `total_agent_count` selalu 0. Perlu keputusan:
+      hapus metriknya, atau isi datanya dari room DO saat join/leave.
