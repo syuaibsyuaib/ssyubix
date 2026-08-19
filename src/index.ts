@@ -2021,25 +2021,23 @@ export class AgentLinkRegistry extends DurableObject {
     if (action === "check") {
       const room_id = url.searchParams.get("room_id") || "";
       const token   = url.searchParams.get("token") || "";
-      const room    = await this.ctx.storage.get<RoomMeta>(`room:${room_id}`);
 
-      if (!room) {
-        return Response.json({ ok: false, error: `Room '${room_id}' tidak ditemukan.` });
-      }
-      // Room lama warisan mode public tersimpan tanpa token, sehingga tidak punya
-      // kunci yang bisa diverifikasi. Room seperti itu ditutup, bukan dibuka bebas.
-      if (!room.token) {
-        return Response.json({
-          ok: false,
-          error: `Room '${room_id}' tidak punya token join dan tidak bisa dimasuki lagi. Buat room baru.`,
-        });
-      }
+      // Diperiksa sebelum room dibaca: ini soal bentuk permintaan, bukan soal room,
+      // jadi menjawabnya spesifik tidak membocorkan apa pun tentang room mana pun.
       if (!token) {
         return Response.json({ ok: false, error: "Token wajib diisi untuk join room." });
       }
-      if (room.token !== token) {
-        return Response.json({ ok: false, error: "Token salah." });
+
+      const room = await this.ctx.storage.get<RoomMeta>(`room:${room_id}`);
+
+      // Satu pesan untuk semua kegagalan berikutnya — room tidak ada, room warisan
+      // publik yang tersimpan tanpa token, atau token salah. Membedakannya akan
+      // memberi tahu penebak bahwa sebuah Room ID itu ada tanpa perlu tokennya,
+      // padahal justru itu yang kita rahasiakan.
+      if (!room || !room.token || !timingSafeEqual(token, room.token)) {
+        return Response.json({ ok: false, error: "Room ID atau token salah." });
       }
+
       return Response.json({ ok: true, room });
     }
 
