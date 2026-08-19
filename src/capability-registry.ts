@@ -98,14 +98,14 @@ function sanitizeBoundedString(
     if (params.allowEmpty) {
       return { value: "" };
     }
-    return { error: `${params.field} tidak boleh null.` };
+    return { error: `${params.field} must not be null.` };
   }
   if (typeof value !== "string") {
-    return { error: `${params.field} harus berupa string.` };
+    return { error: `${params.field} must be a string.` };
   }
   const normalized = value.trim();
   if (!normalized && !params.allowEmpty) {
-    return { error: `${params.field} tidak boleh kosong.` };
+    return { error: `${params.field} must not be empty.` };
   }
   if (normalized.length > params.maxLength) {
     return { error: `${params.field} maksimal ${params.maxLength} karakter.` };
@@ -128,7 +128,7 @@ function sanitizeIdentifier(
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(slug)) {
     return {
       error:
-        `${params.field} hanya boleh berisi huruf kecil, angka, titik, underscore, atau dash.`,
+        `${params.field} may only contain lowercase letters, digits, dots, underscores, or dashes.`,
     };
   }
   return { value: slug };
@@ -201,7 +201,7 @@ function sanitizeAvailability(
     return { value: fallback };
   }
   if (typeof value !== "string") {
-    return { error: "availability harus berupa string." };
+    return { error: "availability must be a string." };
   }
   const normalized = value.trim().toLowerCase();
   if (
@@ -213,13 +213,13 @@ function sanitizeAvailability(
   }
   return {
     error:
-      `availability harus salah satu dari: ${CAPABILITY_AVAILABILITY_VALUES.join(", ")}.`,
+      `availability must be one of: ${CAPABILITY_AVAILABILITY_VALUES.join(", ")}.`,
   };
 }
 
 function validateSkill(value: unknown, index: number): { skill?: CapabilitySkill; errors: string[] } {
   if (!value || typeof value !== "object") {
-    return { errors: [`skills[${index}] harus berupa object.`] };
+    return { errors: [`skills[${index}] must be an object.`] };
   }
 
   const raw = value as Record<string, unknown>;
@@ -383,7 +383,7 @@ export function validateCapabilityProfilePatch(
   if (!raw || typeof raw !== "object") {
     return {
       ok: false,
-      errors: ["Payload capability update harus berupa object JSON."],
+      errors: ["The capability update payload must be a JSON object."],
     };
   }
 
@@ -403,7 +403,7 @@ export function validateCapabilityProfilePatch(
 
   for (const key of Object.keys(input)) {
     if (!allowedKeys.has(key)) {
-      errors.push(`Field '${key}' tidak didukung untuk capability update.`);
+      errors.push(`Field '${key}' is not supported for a capability update.`);
     }
   }
 
@@ -435,7 +435,7 @@ export function validateCapabilityProfilePatch(
 
   if ("tool_access" in input) {
     if (input.tool_access !== null && !Array.isArray(input.tool_access)) {
-      errors.push("tool_access harus berupa array string atau null.");
+      errors.push("tool_access must be an array of strings or null.");
     } else {
       patch.tool_access =
         input.tool_access === null ? [] : sanitizeStringList(input.tool_access).slice(0, 20);
@@ -444,7 +444,7 @@ export function validateCapabilityProfilePatch(
 
   if ("constraints" in input) {
     if (input.constraints !== null && !Array.isArray(input.constraints)) {
-      errors.push("constraints harus berupa array string atau null.");
+      errors.push("constraints must be an array of strings or null.");
     } else {
       patch.constraints =
         input.constraints === null ? [] : sanitizeStringList(input.constraints).slice(0, 20);
@@ -460,12 +460,12 @@ export function validateCapabilityProfilePatch(
     ) {
       const normalized = Math.trunc(input.max_concurrent_tasks);
       if (normalized < 1 || normalized > 100) {
-        errors.push("max_concurrent_tasks harus antara 1 dan 100, atau null.");
+        errors.push("max_concurrent_tasks must be between 1 and 100, or null.");
       } else {
         patch.max_concurrent_tasks = normalized;
       }
     } else {
-      errors.push("max_concurrent_tasks harus berupa integer atau null.");
+      errors.push("max_concurrent_tasks must be an integer or null.");
     }
   }
 
@@ -476,18 +476,18 @@ export function validateCapabilityProfilePatch(
     ) {
       const normalized = Math.trunc(input.current_load);
       if (normalized < 0 || normalized > 100) {
-        errors.push("current_load harus antara 0 dan 100.");
+        errors.push("current_load must be between 0 and 100.");
       } else {
         patch.current_load = normalized;
       }
     } else {
-      errors.push("current_load harus berupa integer.");
+      errors.push("current_load must be an integer.");
     }
   }
 
   if ("skills" in input) {
     if (input.skills !== null && !Array.isArray(input.skills)) {
-      errors.push("skills harus berupa array object atau null.");
+      errors.push("skills must be an array of objects or null.");
     } else if (Array.isArray(input.skills)) {
       const skills: CapabilitySkill[] = [];
       const seen = new Set<string>();
@@ -521,15 +521,15 @@ export function validateCapabilityProfilePatch(
     patch.max_concurrent_tasks !== null &&
     patch.current_load > patch.max_concurrent_tasks
   ) {
-    errors.push("current_load tidak boleh melebihi max_concurrent_tasks.");
+    errors.push("current_load must not exceed max_concurrent_tasks.");
   }
 
   const providedFields = Object.keys(patch);
   if (providedFields.length === 0 && errors.length === 0) {
     errors.push(
       options.availabilityOnly
-        ? "Setidaknya satu field availability/current_load harus dikirim."
-        : "Setidaknya satu field capability yang dapat diubah harus dikirim.",
+        ? "At least one of availability or current_load must be supplied."
+        : "At least one editable capability field must be supplied.",
     );
   }
 

@@ -696,7 +696,7 @@ def _is_retry_entry_expired(entry: dict) -> bool:
 
 def _enqueue_retry_action(action: str, payload: dict, *, reason: str) -> dict:
     if current_room is None:
-        raise RuntimeError("Tidak sedang di dalam room.")
+        raise RuntimeError("Not currently in a room.")
     entry = _normalize_retry_entry({
         "retry_id": uuid.uuid4().hex,
         "room_id": current_room.get("room_id"),
@@ -710,7 +710,7 @@ def _enqueue_retry_action(action: str, payload: dict, *, reason: str) -> dict:
         "next_retry_at": _now_iso(),
     })
     if entry is None:
-        raise RuntimeError("Gagal menyiapkan retry queue lokal.")
+        raise RuntimeError("Could not prepare the local retry queue.")
     entry["expires_at"] = datetime.fromtimestamp(
         time.time() + LOCAL_RETRY_TTL_SECONDS,
         tz=timezone.utc,
@@ -917,7 +917,7 @@ def _room_resource_auth_params(room_id: str) -> dict[str, str]:
 def _require_http_session() -> aiohttp.ClientSession:
     session = http_session
     if session is None:
-        raise RuntimeError("HTTP session belum siap.")
+        raise RuntimeError("HTTP session is not ready.")
     return session
 
 
@@ -943,7 +943,7 @@ async def _fetch_room_resource(path_prefix: str, room_id: str, resource_path: st
         message = payload.get("error") if isinstance(payload, dict) else None
         raise RuntimeError(
             message
-            or f"Gagal membaca capability resource '{resource_path}' untuk room '{normalized_room_id}'."
+            or f"Could not read capability resource '{resource_path}' for room '{normalized_room_id}'."
         )
 
     if isinstance(payload, dict):
@@ -966,18 +966,18 @@ async def _fetch_task_resource(room_id: str, resource_path: str = "") -> dict[st
 
 def _require_capability_context() -> tuple[str, str]:
     if current_room is None or not isinstance(current_room.get("room_id"), str):
-        raise RuntimeError("Tidak sedang di dalam room. Jalankan room_join dulu.")
+        raise RuntimeError("Not in a room. Call room_join first.")
     if ws_conn is None:
-        raise RuntimeError("Koneksi room sedang tidak aktif. Coba tunggu reconnect atau join ulang.")
+        raise RuntimeError("The room connection is down. Wait for a reconnect or join again.")
     if not isinstance(agent_id, str) or not agent_id:
-        raise RuntimeError("Agent ID belum tersedia. Coba join room ulang.")
+        raise RuntimeError("No agent ID yet. Join the room again.")
     return current_room["room_id"].upper(), agent_id
 
 
 def _require_room_connection_context() -> tuple[str, str, str]:
     room_id, self_agent_id = _require_capability_context()
     if not stable_agent_identity_id:
-        raise RuntimeError("Stable agent identity belum tersedia.")
+        raise RuntimeError("Stable agent identity is not available yet.")
     return room_id, self_agent_id, stable_agent_identity_id
 
 
@@ -989,7 +989,7 @@ async def _fetch_self_capability_profile() -> dict[str, Any]:
     )
     agent_payload = payload.get("agent")
     if not isinstance(agent_payload, dict):
-        raise RuntimeError("Capability profile diri sendiri tidak ditemukan.")
+        raise RuntimeError("Own capability profile not found.")
     return payload
 
 
@@ -1147,7 +1147,7 @@ def _fail_pending_acks(reason: str):
 async def _await_ack(payload: dict, timeout: float = 5.0) -> tuple[str, Optional[dict]]:
     connection = ws_conn
     if connection is None:
-        raise RuntimeError("WebSocket belum terhubung.")
+        raise RuntimeError("WebSocket is not connected.")
 
     request_id = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
@@ -1419,50 +1419,50 @@ mcp = FastMCP("agentlink", instructions=SERVER_INSTRUCTIONS, lifespan=lifespan)
 
 class RegisterInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    name: Optional[str] = Field(default=None, description="Nama agent (opsional)")
+    name: Optional[str] = Field(default=None, description="Agent display name (optional)")
 
 class CreateRoomInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    name: str = Field(..., description="Nama room", min_length=1, max_length=50)
+    name: str = Field(..., description="Room name", min_length=1, max_length=50)
 
 class JoinRoomInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    room_id: str = Field(..., description="ID room (6 karakter, contoh: ABC123)")
-    token:   str = Field(..., description="Kode kunci room dari pemilik room", min_length=1)
+    room_id: str = Field(..., description="Room ID (6 characters, for example ABC123)")
+    token:   str = Field(..., description="Room key supplied by the room owner", min_length=1)
 
 
 class RoomAdminMutationInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    target_agent_id: str = Field(..., min_length=1, description="Agent ID target yang sedang aktif di room")
+    target_agent_id: str = Field(..., min_length=1, description="Agent ID of a target currently active in the room")
 
 class SendInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    peer_id:  str = Field(..., description="Agent ID peer tujuan")
-    message:  str = Field(..., description="Isi pesan", min_length=1, max_length=10000)
-    msg_type: str = Field(default="text", description="Tipe: 'text'/'data'/'command'")
+    peer_id:  str = Field(..., description="Agent ID of the recipient peer")
+    message:  str = Field(..., description="Message body", min_length=1, max_length=10000)
+    msg_type: str = Field(default="text", description="Type: 'text', 'data', or 'command'")
 
 class BroadcastInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    message:  str = Field(..., description="Isi pesan ke semua peer", min_length=1)
-    msg_type: str = Field(default="text", description="Tipe pesan")
+    message:  str = Field(..., description="Message body sent to every peer", min_length=1)
+    msg_type: str = Field(default="text", description="Message type")
 
 class ReadInboxInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    limit: int  = Field(default=10, ge=1, le=100, description="Jumlah pesan")
-    only_unread: bool = Field(default=False, description="True = hanya tampilkan pesan di atas cursor baca lokal")
-    mark_read: bool = Field(default=True, description="True = simpan cursor baca lokal dari hasil yang dibaca")
-    clear: bool = Field(default=False, description="Hapus setelah dibaca")
+    limit: int  = Field(default=10, ge=1, le=100, description="How many messages to return")
+    only_unread: bool = Field(default=False, description="True = only return messages past the local read cursor")
+    mark_read: bool = Field(default=True, description="True = advance the local read cursor to what was returned")
+    clear: bool = Field(default=False, description="Clear the cached messages after reading")
 
 
 class LocalRoomSummaryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    room_id: Optional[str] = Field(default=None, description="ID room untuk membaca snapshot lokal tertentu")
+    room_id: Optional[str] = Field(default=None, description="Room ID whose local snapshot should be read")
 
 
 @mcp.resource(
     "ssyubix://guides/readme-first",
     name="ssyubix-readme-first",
-    description="Panduan onboarding dan best practice untuk agent yang baru memakai ssyubix.",
+    description="Onboarding guide and best practices for agents new to ssyubix.",
     mime_type="text/markdown",
 )
 def readme_first_resource() -> str:
@@ -1472,7 +1472,7 @@ def readme_first_resource() -> str:
 @mcp.prompt(
     name="ssyubix_readme_first",
     title="ssyubix Readme First",
-    description="Prompt onboarding ringkas untuk agent yang baru memakai ssyubix.",
+    description="Short onboarding prompt for agents new to ssyubix.",
 )
 def readme_first_prompt() -> str:
     return READ_ME_FIRST_PROMPT
@@ -1480,22 +1480,22 @@ def readme_first_prompt() -> str:
 
 class CapabilitySkillInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    id: str = Field(..., min_length=1, max_length=64, description="ID skill stabil, contoh: code_review")
-    name: str = Field(..., min_length=1, max_length=80, description="Nama skill")
-    description: str = Field(default="", max_length=240, description="Deskripsi singkat skill")
-    tags: list[str] = Field(default_factory=list, description="Tag skill")
-    examples: list[str] = Field(default_factory=list, description="Contoh use case ringkas")
-    input_modes: list[str] = Field(default_factory=list, description="Mode input yang didukung")
-    output_modes: list[str] = Field(default_factory=list, description="Mode output yang didukung")
+    id: str = Field(..., min_length=1, max_length=64, description="Stable skill ID, for example code_review")
+    name: str = Field(..., min_length=1, max_length=80, description="Skill name")
+    description: str = Field(default="", max_length=240, description="Short description of the skill")
+    tags: list[str] = Field(default_factory=list, description="Skill tags")
+    examples: list[str] = Field(default_factory=list, description="Short example use cases")
+    input_modes: list[str] = Field(default_factory=list, description="Supported input modes")
+    output_modes: list[str] = Field(default_factory=list, description="Supported output modes")
 
     @field_validator("id")
     @classmethod
     def normalize_skill_id(cls, value: str) -> str:
         normalized = value.strip().lower().replace(" ", "_")
         if not normalized:
-            raise ValueError("skill id tidak boleh kosong")
+            raise ValueError("skill id must not be empty")
         if not all(ch.isalnum() or ch in "._-" for ch in normalized):
-            raise ValueError("skill id hanya boleh berisi huruf kecil, angka, titik, underscore, atau dash")
+            raise ValueError("skill id may only contain lowercase letters, digits, dots, underscores, or dashes")
         return normalized
 
     @field_validator("tags", "examples", "input_modes", "output_modes")
@@ -1514,13 +1514,13 @@ class CapabilitySkillInput(BaseModel):
 
 class CapabilityUpsertInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    summary: Optional[str] = Field(default=None, max_length=500, description="Ringkasan singkat agent")
-    version: Optional[str] = Field(default=None, max_length=64, description="Versi capability card agent")
-    tool_access: Optional[list[str]] = Field(default=None, description="Akses tool yang dimiliki agent")
-    constraints: Optional[list[str]] = Field(default=None, description="Batasan atau guardrail agent")
-    max_concurrent_tasks: Optional[int] = Field(default=None, ge=1, le=100, description="Batas tugas paralel")
-    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Perkiraan beban kerja saat ini")
-    skills: Optional[list[CapabilitySkillInput]] = Field(default=None, description="Daftar skill yang dideklarasikan")
+    summary: Optional[str] = Field(default=None, max_length=500, description="Short summary of this agent")
+    version: Optional[str] = Field(default=None, max_length=64, description="Version of this agent's capability card")
+    tool_access: Optional[list[str]] = Field(default=None, description="Tools this agent can use")
+    constraints: Optional[list[str]] = Field(default=None, description="Constraints or guardrails this agent works under")
+    max_concurrent_tasks: Optional[int] = Field(default=None, ge=1, le=100, description="Limit on concurrent tasks")
+    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Rough current workload")
+    skills: Optional[list[CapabilitySkillInput]] = Field(default=None, description="Skills this agent declares")
 
     @field_validator("tool_access", "constraints")
     @classmethod
@@ -1540,13 +1540,13 @@ class CapabilityUpsertInput(BaseModel):
     @model_validator(mode="after")
     def validate_payload(self):
         if not self.model_fields_set:
-            raise ValueError("Setidaknya satu field capability harus diisi.")
+            raise ValueError("At least one capability field must be supplied.")
         if (
             self.max_concurrent_tasks is not None
             and self.current_load is not None
             and self.current_load > self.max_concurrent_tasks
         ):
-            raise ValueError("current_load tidak boleh melebihi max_concurrent_tasks.")
+            raise ValueError("current_load must not exceed max_concurrent_tasks.")
         return self
 
 
@@ -1554,42 +1554,42 @@ class CapabilityAvailabilityInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     availability: Literal["available", "busy", "away", "dnd"] = Field(
         ...,
-        description="Status kesiapan kerja agent",
+        description="Whether this agent is ready to take work",
     )
-    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Perkiraan beban kerja saat ini")
+    current_load: Optional[int] = Field(default=None, ge=0, le=100, description="Rough current workload")
 
 
 class TaskOfferInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    title: str = Field(..., min_length=1, max_length=140, description="Judul task ringkas")
-    to_agent_id: str = Field(..., min_length=1, description="Agent ID tujuan offer delegasi")
-    priority: Literal["low", "normal", "high"] = Field(default="normal", description="Prioritas task")
+    title: str = Field(..., min_length=1, max_length=140, description="Short task title")
+    to_agent_id: str = Field(..., min_length=1, description="Agent ID the delegation offer is made to")
+    priority: Literal["low", "normal", "high"] = Field(default="normal", description="Task priority")
     point_of_contact_agent_id: Optional[str] = Field(
         default=None,
-        description="Agent ID yang jadi titik kontak follow-up. Default: pengirim offer.",
+        description="Agent ID acting as the follow-up point of contact. Defaults to the offering agent.",
     )
 
 
 class TaskTransitionInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    task_id: str = Field(..., min_length=1, description="ID task yang ingin diubah status delegation-nya")
-    reason: Optional[str] = Field(default=None, max_length=240, description="Alasan ringkas reject/defer")
+    task_id: str = Field(..., min_length=1, description="ID of the task whose delegation state should change")
+    reason: Optional[str] = Field(default=None, max_length=240, description="Short reason for rejecting or deferring")
 
 
 class TaskAcceptInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    task_id: str = Field(..., min_length=1, description="ID offer delegasi yang akan diterima")
+    task_id: str = Field(..., min_length=1, description="ID of the delegation offer to accept")
 
 
 class TaskLookupInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    task_id: str = Field(..., min_length=1, description="ID task yang ingin dibaca")
+    task_id: str = Field(..., min_length=1, description="ID of the task to read")
 
 
 class TaskDeferInput(TaskTransitionInput):
     deferred_until: Optional[str] = Field(
         default=None,
-        description="Hint waktu ISO-8601 kapan task bisa ditinjau ulang",
+        description="ISO-8601 hint for when the task can be reconsidered",
     )
 
     @field_validator("deferred_until")
@@ -1600,14 +1600,14 @@ class TaskDeferInput(TaskTransitionInput):
         try:
             datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise ValueError("deferred_until harus berupa waktu ISO-8601 yang valid.") from exc
+            raise ValueError("deferred_until must be a valid ISO-8601 timestamp.") from exc
         return value
 
 
 @mcp.resource(
     "ssyubix://rooms/{room_id}/agents",
     name="ssyubix-room-capability-agents",
-    description="Capability registry per room untuk semua agent yang diketahui relay.",
+    description="Per-room capability registry covering every agent the relay knows about.",
     mime_type="application/json",
 )
 async def capability_agents_resource(room_id: str) -> str:
@@ -1618,7 +1618,7 @@ async def capability_agents_resource(room_id: str) -> str:
 @mcp.resource(
     "ssyubix://rooms/{room_id}/agents/{agent_id}",
     name="ssyubix-room-capability-agent",
-    description="Capability profile untuk satu agent pada room tertentu.",
+    description="Capability profile for a single agent in a given room.",
     mime_type="application/json",
 )
 async def capability_agent_resource(room_id: str, agent_id: str) -> str:
@@ -1629,7 +1629,7 @@ async def capability_agent_resource(room_id: str, agent_id: str) -> str:
 @mcp.resource(
     "ssyubix://rooms/{room_id}/skills",
     name="ssyubix-room-capability-skills",
-    description="Indeks skill ke agent-agent yang mendeklarasikannya pada room tertentu.",
+    description="Index from skills to the agents declaring them in a given room.",
     mime_type="application/json",
 )
 async def capability_skills_resource(room_id: str) -> str:
@@ -1640,7 +1640,7 @@ async def capability_skills_resource(room_id: str) -> str:
 @mcp.resource(
     "ssyubix://rooms/{room_id}/skills/{skill_id}",
     name="ssyubix-room-capability-skill",
-    description="Detail skill tertentu beserta agent yang mendeklarasikannya.",
+    description="Details of one skill and the agents that declare it.",
     mime_type="application/json",
 )
 async def capability_skill_resource(room_id: str, skill_id: str) -> str:
@@ -1662,7 +1662,7 @@ async def room_tasks_resource(room_id: str) -> str:
 @mcp.resource(
     "ssyubix://rooms/{room_id}/tasks/{task_id}",
     name="ssyubix-room-task",
-    description="Detail satu delegation task pada room tertentu.",
+    description="Details of a single delegation task in a given room.",
     mime_type="application/json",
 )
 async def room_task_resource(room_id: str, task_id: str) -> str:
@@ -1718,7 +1718,7 @@ async def capability_upsert_self(params: CapabilityUpsertInput) -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat menyimpan capability profile.",
+                "error": "ACK timed out while saving the capability profile.",
             })
 
         profile_payload = await _fetch_self_capability_profile()
@@ -1761,7 +1761,7 @@ async def capability_set_availability(params: CapabilityAvailabilityInput) -> st
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat memperbarui availability capability.",
+                "error": "ACK timed out while updating capability availability.",
             })
 
         profile_payload = await _fetch_self_capability_profile()
@@ -1797,7 +1797,7 @@ async def capability_remove_self() -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat menghapus capability profile.",
+                "error": "ACK timed out while removing the capability profile.",
             })
 
         profile_payload = await _fetch_self_capability_profile()
@@ -1809,7 +1809,7 @@ async def capability_remove_self() -> str:
             "message_id": ack.get("message_id"),
             "sequence": ack.get("sequence"),
             "resource_uri": f"ssyubix://rooms/{room_id}/agents/{self_agent_id}",
-            "message": "Capability profile kustom dihapus. Resource self sekarang kembali ke profil minimal room.",
+            "message": "Custom capability profile removed. The self resource is back to the room's minimal profile.",
             **profile_payload,
         }, indent=2)
     except Exception as e:
@@ -1841,14 +1841,14 @@ async def task_offer(params: TaskOfferInput) -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat mengirim delegation offer.",
+                "error": "ACK timed out while sending the delegation offer.",
             })
 
         task_id = ack.get("task_id")
         task_payload = (
             await _fetch_task_by_id(room_id, task_id)
             if isinstance(task_id, str) and task_id
-            else {"success": False, "error": "Task ID tidak dikembalikan relay."}
+            else {"success": False, "error": "The relay did not return a task ID."}
         )
         return json.dumps({
             "success": ack.get("accepted", False),
@@ -1885,7 +1885,7 @@ async def task_accept(params: TaskAcceptInput) -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat menerima delegation offer.",
+                "error": "ACK timed out while accepting the delegation offer.",
             })
         task_payload = await _fetch_task_by_id(room_id, params.task_id)
         return json.dumps({
@@ -1925,7 +1925,7 @@ async def task_reject(params: TaskTransitionInput) -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat menolak delegation offer.",
+                "error": "ACK timed out while rejecting the delegation offer.",
             })
         task_payload = await _fetch_task_by_id(room_id, params.task_id)
         return json.dumps({
@@ -1967,7 +1967,7 @@ async def task_defer(params: TaskDeferInput) -> str:
             return json.dumps({
                 "success": False,
                 "request_id": request_id,
-                "error": "ACK timeout saat menunda delegation offer.",
+                "error": "ACK timed out while deferring the delegation offer.",
             })
         task_payload = await _fetch_task_by_id(room_id, params.task_id)
         return json.dumps({
@@ -2041,7 +2041,7 @@ async def agent_register(params: RegisterInput) -> str:
         agent_name = params.name
     return json.dumps({"success": True, "name": agent_name, "server": AGENTLINK_URL,
         "stable_agent_identity_id": stable_agent_identity_id,
-        "message": f"Agent '{agent_name}' siap. Sekarang bisa create/join room."}, indent=2)
+        "message": f"Agent '{agent_name}' is ready. You can now create or join a room."}, indent=2)
 
 
 @mcp.tool(name="room_create")
@@ -2056,7 +2056,7 @@ async def room_create(params: CreateRoomInput) -> str:
     """
     try:
         if not stable_agent_identity_id:
-            raise RuntimeError("Stable agent identity belum tersedia.")
+            raise RuntimeError("Stable agent identity is not available yet.")
         async with _require_http_session().post(f"{AGENTLINK_URL}/rooms",
             json={
                 "name": params.name,
@@ -2110,10 +2110,10 @@ async def room_join(params: JoinRoomInput) -> str:
             "local_cached_message_count": current_room.get("local_cached_message_count") if current_room else 0,
             "local_retry_queue_count": current_room.get("local_retry_queue_count") if current_room else 0,
             "local_room_summary": current_room.get("local_summary") if current_room else None,
-            "message": welcome.get("message", f"Berhasil join room '{rid}'.")}, indent=2)
+            "message": welcome.get("message", f"Joined room '{rid}'.")}, indent=2)
 
     except asyncio.TimeoutError:
-        return json.dumps({"success": False, "error": "Timeout saat konek ke room."})
+        return json.dumps({"success": False, "error": "Timed out connecting to the room."})
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -2131,7 +2131,7 @@ async def room_leave() -> str:
     """
     global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     if not current_room:
-        return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
+        return json.dumps({"success": False, "error": "Not currently in a room."})
     auto_reconnect_enabled = False
     _cancel_reconnect_task()
     _cancel_retry_replay_task()
@@ -2144,7 +2144,7 @@ async def room_leave() -> str:
     except Exception: pass
     _fail_pending_acks("WebSocket connection closed by room_leave.")
     ws_conn = None; current_room = None; agent_id = None
-    return json.dumps({"success": True, "message": "Berhasil keluar dari room."})
+    return json.dumps({"success": True, "message": "Left the room."})
 
 
 # Tool `room_list` dihapus: semua room private, jadi tidak ada room yang bisa
@@ -2161,7 +2161,7 @@ async def room_info() -> str:
     refreshes local cache metadata but does not change the room's shared state.
     """
     if not current_room:
-        return json.dumps({"success": False, "error": "Tidak sedang di dalam room."})
+        return json.dumps({"success": False, "error": "Not currently in a room."})
     current_room["local_retry_queue_count"] = len(_retry_queue())
     _persist_local_room_state()
     return json.dumps({"success": True, "room": current_room,
@@ -2185,7 +2185,7 @@ async def room_admin_add(params: RoomAdminMutationInput) -> str:
             "target_agent_id": params.target_agent_id,
         })
         if ack is None:
-            raise RuntimeError("Timeout menunggu ACK room_admin_add.")
+            raise RuntimeError("Timed out waiting for the room_admin_add ACK.")
         _apply_room_role_ack(ack)
         return json.dumps({
             "success": True,
@@ -2198,7 +2198,7 @@ async def room_admin_add(params: RoomAdminMutationInput) -> str:
             "target_agent_id": ack.get("target_agent_id", params.target_agent_id),
             "target_stable_identity_id": ack.get("target_stable_identity_id"),
             "target_role": ack.get("target_role_label"),
-            "message": f"Agent '{params.target_agent_id}' sekarang menjadi admin room.",
+            "message": f"Agent '{params.target_agent_id}' is now a room admin.",
         }, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
@@ -2222,7 +2222,7 @@ async def room_admin_remove(params: RoomAdminMutationInput) -> str:
             "target_agent_id": params.target_agent_id,
         })
         if ack is None:
-            raise RuntimeError("Timeout menunggu ACK room_admin_remove.")
+            raise RuntimeError("Timed out waiting for the room_admin_remove ACK.")
         _apply_room_role_ack(ack)
         return json.dumps({
             "success": True,
@@ -2235,7 +2235,7 @@ async def room_admin_remove(params: RoomAdminMutationInput) -> str:
             "target_agent_id": ack.get("target_agent_id", params.target_agent_id),
             "target_stable_identity_id": ack.get("target_stable_identity_id"),
             "target_role": ack.get("target_role_label"),
-            "message": f"Role admin untuk agent '{params.target_agent_id}' sudah dicabut.",
+            "message": f"Admin role revoked for agent '{params.target_agent_id}'.",
         }, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
@@ -2275,13 +2275,13 @@ async def agent_send(params: SendInput) -> str:
     payload = {"type": "send", "to": params.peer_id,
         "content": params.message, "msg_type": params.msg_type}
     if current_room is None:
-        return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
+        return json.dumps({"success": False, "error": "Not connected to a room. Call room_join first."})
     if ws_conn is None:
-        queued = _enqueue_retry_action("send", payload, reason="WebSocket tidak terhubung")
+        queued = _enqueue_retry_action("send", payload, reason="WebSocket not connected")
         return json.dumps({"success": False, "queued_for_retry": True,
             "retry_queue_id": queued["retry_id"],
             "retry_queue_count": len(_retry_queue()),
-            "message": "Pesan disimpan di retry queue lokal hingga koneksi pulih."})
+            "message": "Message saved to the local retry queue until the connection recovers."})
     try:
         request_id, ack = await _await_ack(payload)
         if ack is None:
@@ -2290,7 +2290,7 @@ async def agent_send(params: SendInput) -> str:
                 "queued_for_retry": True,
                 "retry_queue_id": queued["retry_id"],
                 "retry_queue_count": len(_retry_queue()),
-                "note": "ACK timeout. Pesan disimpan di retry queue lokal."})
+                "note": "ACK timed out. Message saved to the local retry queue."})
         if ack.get("delivered", False):
             return json.dumps({"success": True,
                 "accepted": ack.get("accepted", False),
@@ -2300,7 +2300,7 @@ async def agent_send(params: SendInput) -> str:
                 "request_id": request_id,
                 "message_id": ack.get("message_id"),
                 "sequence": ack.get("sequence")})
-        queued = _enqueue_retry_action("send", payload, reason="Target belum menerima pesan")
+        queued = _enqueue_retry_action("send", payload, reason="Target has not received the message")
         return json.dumps({"success": False,
             "accepted": ack.get("accepted", False),
             "delivered": ack.get("delivered", False),
@@ -2332,13 +2332,13 @@ async def agent_broadcast(params: BroadcastInput) -> str:
     payload = {"type": "broadcast",
         "content": params.message, "msg_type": params.msg_type}
     if current_room is None:
-        return json.dumps({"success": False, "error": "Tidak terhubung ke room. Jalankan room_join dulu."})
+        return json.dumps({"success": False, "error": "Not connected to a room. Call room_join first."})
     if ws_conn is None:
-        queued = _enqueue_retry_action("broadcast", payload, reason="WebSocket tidak terhubung")
+        queued = _enqueue_retry_action("broadcast", payload, reason="WebSocket not connected")
         return json.dumps({"success": False, "queued_for_retry": True,
             "retry_queue_id": queued["retry_id"],
             "retry_queue_count": len(_retry_queue()),
-            "message": "Broadcast disimpan di retry queue lokal hingga koneksi pulih."})
+            "message": "Broadcast saved to the local retry queue until the connection recovers."})
     try:
         request_id, ack = await _await_ack(payload)
         if ack is None:
@@ -2347,7 +2347,7 @@ async def agent_broadcast(params: BroadcastInput) -> str:
                 "queued_for_retry": True,
                 "retry_queue_id": queued["retry_id"],
                 "retry_queue_count": len(_retry_queue()),
-                "message": "ACK timeout. Broadcast disimpan di retry queue lokal."})
+                "message": "ACK timed out. Broadcast saved to the local retry queue."})
         if ack.get("delivered", False):
             return json.dumps({"success": ack.get("accepted", False),
                 "accepted": ack.get("accepted", False),
@@ -2356,8 +2356,8 @@ async def agent_broadcast(params: BroadcastInput) -> str:
                 "request_id": request_id,
                 "message_id": ack.get("message_id"),
                 "sequence": ack.get("sequence"),
-                "message": "Broadcast diterima relay."})
-        queued = _enqueue_retry_action("broadcast", payload, reason="Belum ada penerima aktif")
+                "message": "The relay accepted the broadcast."})
+        queued = _enqueue_retry_action("broadcast", payload, reason="No active recipients yet")
         return json.dumps({"success": False,
             "accepted": ack.get("accepted", False),
             "delivered": ack.get("delivered", False),
@@ -2368,7 +2368,7 @@ async def agent_broadcast(params: BroadcastInput) -> str:
             "queued_for_retry": True,
             "retry_queue_id": queued["retry_id"],
             "retry_queue_count": len(_retry_queue()),
-            "message": "Broadcast disimpan di retry queue lokal sampai ada penerima aktif."})
+            "message": "Broadcast saved to the local retry queue until a recipient is active."})
     except Exception as e:
         queued = _enqueue_retry_action("broadcast", payload, reason=str(e))
         return json.dumps({"success": False, "error": str(e),

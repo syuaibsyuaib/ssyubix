@@ -89,7 +89,7 @@ test("rejectDelegationOffer blocks unrelated agents", () => {
   });
 
   assert.equal(result.changed, false);
-  assert.match(result.error ?? "", /Hanya agent tujuan/);
+  assert.match(result.error ?? "", /Only the agent the task was offered to/);
 });
 
 test("deferDelegationOffer stores the defer reason and schedule hint", () => {
