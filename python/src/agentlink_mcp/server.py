@@ -1083,7 +1083,8 @@ async def _connect_room(rid: str, token: Optional[str], *, reconnecting: bool = 
     current_room = {
         "room_id": rid,
         "room_name": welcome.get("room_name", rid),
-        "is_private": bool(welcome.get("is_private", bool(token))),
+        # Semua room private; field dipertahankan agar konsumen lama tetap terbaca.
+        "is_private": True,
         "last_sequence": welcome.get("last_sequence", 0),
         "joined_at": welcome.get("joined_at"),
         "last_seen_at": welcome.get("last_seen_at"),
@@ -1273,7 +1274,7 @@ def _handle_incoming(msg: dict):
                 logger.warning("Stable identity cache write failed during welcome: %s", exc)
         if current_room is not None:
             current_room["room_name"] = msg.get("room_name", current_room.get("room_name", current_room.get("room_id")))
-            current_room["is_private"] = bool(msg.get("is_private", current_room.get("is_private", False)))
+            current_room["is_private"] = True
             current_room["last_sequence"] = msg.get("last_sequence", current_room.get("last_sequence", 0))
             current_room["joined_at"] = msg.get("joined_at", current_room.get("joined_at"))
             current_room["last_seen_at"] = msg.get("last_seen_at", current_room.get("last_seen_at"))
@@ -1422,13 +1423,12 @@ class RegisterInput(BaseModel):
 
 class CreateRoomInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    name:       str  = Field(..., description="Nama room", min_length=1, max_length=50)
-    is_private: bool = Field(default=False, description="True = private (butuh token), False = public")
+    name: str = Field(..., description="Nama room", min_length=1, max_length=50)
 
 class JoinRoomInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    room_id: str           = Field(..., description="ID room (6 karakter, contoh: ABC123)")
-    token:   Optional[str] = Field(default=None, description="Token untuk private room")
+    room_id: str = Field(..., description="ID room (6 karakter, contoh: ABC123)")
+    token:   str = Field(..., description="Kode kunci room dari pemilik room", min_length=1)
 
 
 class RoomAdminMutationInput(BaseModel):
@@ -2030,19 +2030,11 @@ async def task_get(params: TaskLookupInput) -> str:
 )
 async def agent_register(params: RegisterInput) -> str:
     """
-    Daftarkan agent ke AgentLink. Wajib dipanggil pertama sebelum tools lain.
+    Register this agent's local display name and identity before using any other AgentLink tool.
 
-    Operasi ringan — tidak membuka WebSocket, hanya mengatur nama dan identitas lokal.
-    Gunakan segera setelah startup, sebelum room_create atau room_join. Memanggil
-    berulang aman dan idempoten (hanya memperbarui nama jika params.name diberikan).
-    Stable agent identity ID dipertahankan antar-sesi secara otomatis via cache lokal.
-    Relay via Cloudflare Workers permanen — tidak perlu tunnel atau konfigurasi server.
-
-    Args:
-        params.name (str, opsional): Nama display agent. Jika kosong, nama acak digunakan.
-
-    Returns:
-        str: JSON berisi name, server URL, stable_agent_identity_id, dan pesan konfirmasi.
+    Call once at startup, before room_create or room_join. This is lightweight and idempotent:
+    it opens no WebSocket, only updates the name when params.name is given, and is safe to call
+    repeatedly. The stable agent identity persists automatically across sessions via local cache.
     """
     global agent_name
     if params.name:
@@ -2055,11 +2047,12 @@ async def agent_register(params: RegisterInput) -> str:
 @mcp.tool(name="room_create")
 async def room_create(params: CreateRoomInput) -> str:
     """
-    Create a new collaboration room on the Cloudflare relay.
+    Create a new collaboration room on the Cloudflare relay and return its join key.
 
-    Call after agent_register when starting a new group; choose is_private for a token-protected
-    room and securely share the returned token with intended peers. Use room_join, not this tool,
-    to enter an existing room.
+    Call after agent_register when starting a new group. Every room is private: the response
+    carries a one-time token that peers must pass to room_join, so share it over a trusted
+    channel and keep it out of logs. The token is not retrievable later and never appears in
+    any public listing. Use room_join, not this tool, to enter an existing room.
     """
     try:
         if not stable_agent_identity_id:
@@ -2067,7 +2060,6 @@ async def room_create(params: CreateRoomInput) -> str:
         async with _require_http_session().post(f"{AGENTLINK_URL}/rooms",
             json={
                 "name": params.name,
-                "is_private": params.is_private,
                 "owner_stable_identity_id": stable_agent_identity_id,
             }) as r:
             return json.dumps(await r.json(), indent=2)
@@ -2080,9 +2072,10 @@ async def room_join(params: JoinRoomInput) -> str:
     """
     Join an existing room and open its Cloudflare WebSocket connection.
 
-    Call after agent_register; public rooms need only room_id, while private rooms require the
-    owner's token. Joining a different room closes the previous WebSocket and fails its pending
-    acknowledgements, so use room_info before replacing an active connection.
+    Call after agent_register. Every room is private, so both room_id and the owner's token are
+    required; there is no way to discover or enter a room without them. Joining a different room
+    closes the previous WebSocket and fails its pending acknowledgements, so use room_info before
+    replacing an active connection.
     """
     global ws_conn, current_room, agent_id, room_credentials, auto_reconnect_enabled
     rid = params.room_id.upper()
@@ -2105,7 +2098,7 @@ async def room_join(params: JoinRoomInput) -> str:
         return json.dumps({"success": True, "room_id": rid, "my_agent_id": agent_id,
             "stable_agent_identity_id": stable_agent_identity_id,
             "room_name": current_room.get("room_name") if current_room else rid,
-            "is_private": current_room.get("is_private") if current_room else bool(params.token),
+            "is_private": True,
             "room_role": current_room.get("room_role") if current_room else None,
             "owner_stable_identity_id": current_room.get("owner_stable_identity_id") if current_room else None,
             "admin_stable_identity_ids": current_room.get("admin_stable_identity_ids") if current_room else [],
@@ -2154,23 +2147,9 @@ async def room_leave() -> str:
     return json.dumps({"success": True, "message": "Berhasil keluar dari room."})
 
 
-@mcp.tool(
-    name="room_list",
-    annotations=ToolAnnotations(readOnlyHint=True),
-)
-async def room_list() -> str:
-    """
-    List active public rooms on the Cloudflare relay without joining any room.
-
-    Use this to discover a public room ID before room_join. Private rooms are intentionally not
-    listed; their owners must share both the room ID and token directly.
-    """
-    try:
-        async with _require_http_session().get(f"{AGENTLINK_URL}/rooms") as r:
-            rooms = await r.json()
-        return json.dumps({"success": True, "rooms": rooms, "count": len(rooms)}, indent=2)
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+# Tool `room_list` dihapus: semua room private, jadi tidak ada room yang bisa
+# ditemukan tanpa room_id + token dari pemiliknya. `GET /rooms` kini hanya
+# mengembalikan statistik agregat untuk dashboard, bukan daftar room.
 
 
 @mcp.tool(name="room_info")
