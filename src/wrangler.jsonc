@@ -3,6 +3,10 @@
   "main": "index.ts",
   "compatibility_date": "2025-03-07",
   "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
