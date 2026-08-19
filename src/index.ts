@@ -3,10 +3,13 @@
  * WebSocket relay/signaling server untuk komunikasi antar Claude agent.
  *
  * Endpoints:
- *   GET  /                        → info server
- *   GET  /rooms                   → list room public aktif
- *   WS   /connect/:room_id        → join room (query: ?name=&token=)
- *   POST /rooms                   → buat room baru (body: {name, is_private})
+ *   GET  /                        → halaman dashboard (Static Assets)
+ *   GET  /info                    → info server
+ *   GET  /rooms                   → statistik aktivitas agregat (tanpa ID/nama room)
+ *   WS   /connect/:room_id        → join room (query: ?name=&token=, token wajib)
+ *   POST /rooms                   → buat room baru (body: {name})
+ *
+ * Semua room bersifat private: join selalu memerlukan token yang dibagikan owner.
  */
 
 import { DurableObject } from "cloudflare:workers";
@@ -37,7 +40,7 @@ import {
   type AgentPresenceSnapshot,
   type StoredRoomSession,
 } from "./presence";
-import { listPublicRooms, type StoredRoomMeta } from "./room-meta";
+import { summarizeRoomActivity, type StoredRoomMeta } from "./room-meta";
 import {
   grantRoomAdmin,
   normalizeRoomRoleState,
@@ -70,7 +73,6 @@ export interface Env {
 interface RoomMeta extends StoredRoomMeta {
   room_id: string;
   name: string;
-  is_private: boolean;
   token: string;
   created_at: string;
   agent_count: number;
@@ -159,21 +161,29 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, X-Room-Token",
     };
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // ── GET / ── info server
-    if (path === "/" && request.method === "GET") {
+    // ── GET /dashboard ── halaman dashboard sekarang di root; jaga link lama.
+    if ((path === "/dashboard" || path === "/dashboard/") && request.method === "GET") {
+      return Response.redirect(new URL("/", url).toString(), 301);
+    }
+
+    // ── GET /info ── info server.
+    // Root "/" dilayani Static Assets (halaman dashboard), jadi info pindah ke sini.
+    if (path === "/info" && request.method === "GET") {
       return Response.json({
         name: "AgentLink",
-        version: "2.3.0",
+        version: "3.0.0",
         backend: "Cloudflare Workers + Durable Objects",
         endpoints: {
-          list_rooms: "GET /rooms",
+          dashboard: "GET /",
+          server_info: "GET /info",
+          room_activity_stats: "GET /rooms",
           create_room: "POST /rooms",
           connect: "WS /connect/:room_id?name=<name>&token=<token>",
           capability_agents: "GET /capabilities/:room_id/agents?token=<token>",
@@ -186,21 +196,20 @@ export default {
       }, { headers: corsHeaders });
     }
 
-    // ── GET /rooms ── list semua room public
+    // ── GET /rooms ── statistik agregat; tidak pernah membocorkan ID/nama room
     if (path === "/rooms" && request.method === "GET") {
       const registry = env.AGENTLINK_REGISTRY.get(
         env.AGENTLINK_REGISTRY.idFromName("global")
       );
       const resp = await registry.fetch(new Request("http://internal/list"));
-      const rooms = await resp.json() as ReturnType<typeof listPublicRooms>;
-      return Response.json(rooms, { headers: corsHeaders });
+      const stats = await resp.json() as ReturnType<typeof summarizeRoomActivity>;
+      return Response.json(stats, { headers: corsHeaders });
     }
 
     // ── POST /rooms ── buat room baru
     if (path === "/rooms" && request.method === "POST") {
       let body: {
         name?: string;
-        is_private?: boolean;
         owner_stable_identity_id?: string;
       } = {};
       try {
@@ -208,7 +217,6 @@ export default {
       } catch {}
 
       const name = (body.name || "unnamed").slice(0, 50);
-      const is_private = body.is_private === true;
       const ownerStableIdentityId = sanitizeStableAgentIdentityId(
         typeof body.owner_stable_identity_id === "string"
           ? body.owner_stable_identity_id
@@ -221,7 +229,7 @@ export default {
         }, { status: 400, headers: corsHeaders });
       }
       const room_id = generateId(6);
-      const token = is_private ? generateId(12) : "";
+      const token = generateId(12);
       const created_at = new Date().toISOString();
 
       // Simpan ke registry
@@ -233,7 +241,6 @@ export default {
         body: JSON.stringify({
           room_id,
           name,
-          is_private,
           token,
           created_at,
           owner_stable_identity_id: ownerStableIdentityId,
@@ -245,13 +252,12 @@ export default {
         success: true,
         room_id,
         name,
-        is_private,
-        token: is_private ? token : undefined,
+        token,
         owner_stable_identity_id: ownerStableIdentityId,
         role_label: "owner",
-        message: is_private
-          ? `Bagikan room_id '${room_id}' dan token ke peer.`
-          : `Bagikan room_id '${room_id}' ke peer untuk join.`,
+        message:
+          `Bagikan room_id '${room_id}' dan token ke peer. Token wajib untuk join — ` +
+          `simpan sekarang karena tidak ditampilkan lagi di listing publik.`,
       }, { headers: corsHeaders });
     }
 
@@ -264,7 +270,7 @@ export default {
       const entryId = capabilityMatch[3]
         ? decodeURIComponent(capabilityMatch[3])
         : undefined;
-      const token = url.searchParams.get("token") || "";
+      const token = readRoomToken(request, url);
 
       const registry = env.AGENTLINK_REGISTRY.get(
         env.AGENTLINK_REGISTRY.idFromName("global"),
@@ -303,7 +309,7 @@ export default {
       const taskId = taskMatch[2]
         ? decodeURIComponent(taskMatch[2])
         : undefined;
-      const token = url.searchParams.get("token") || "";
+      const token = readRoomToken(request, url);
 
       const registry = env.AGENTLINK_REGISTRY.get(
         env.AGENTLINK_REGISTRY.idFromName("global"),
@@ -479,7 +485,7 @@ export class AgentLinkRoom extends DurableObject {
       name: agentName,
       room_id: roomId,
       room_name: roomMeta?.name ?? roomId,
-      is_private: roomMeta?.is_private ?? false,
+      is_private: true,
       room_role: selfRoleLabel,
       owner_stable_identity_id: roomRoles.owner_stable_identity_id,
       admin_stable_identity_ids: roomRoles.admin_stable_identity_ids,
@@ -1801,18 +1807,17 @@ export class AgentLinkRoom extends DurableObject {
 }
 
 // ─── Durable Object: Registry ─────────────────────────────────────────────────
-// Menyimpan metadata room (nama, private/public, token)
+// Menyimpan metadata room (nama, token join, kepemilikan)
 
 export class AgentLinkRegistry extends DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url    = new URL(request.url);
     const action = url.pathname.replace("/", "");
 
-    // List semua room
+    // Statistik agregat saja — daftar room tidak pernah diekspos
     if (action === "list") {
       const all = await this.ctx.storage.list<RoomMeta>({ prefix: "room:" });
-      const rooms = listPublicRooms(all.values());
-      return Response.json(rooms);
+      return Response.json(summarizeRoomActivity(all.values()));
     }
 
     // Register room baru
@@ -1840,7 +1845,7 @@ export class AgentLinkRegistry extends DurableObject {
       return Response.json({ ok: true, room });
     }
 
-    // Check room + token validity
+    // Check room + token validity. Semua room private: token selalu wajib.
     if (action === "check") {
       const room_id = url.searchParams.get("room_id") || "";
       const token   = url.searchParams.get("token") || "";
@@ -1849,7 +1854,18 @@ export class AgentLinkRegistry extends DurableObject {
       if (!room) {
         return Response.json({ ok: false, error: `Room '${room_id}' tidak ditemukan.` });
       }
-      if (room.is_private && room.token !== token) {
+      // Room lama warisan mode public tersimpan tanpa token, sehingga tidak punya
+      // kunci yang bisa diverifikasi. Room seperti itu ditutup, bukan dibuka bebas.
+      if (!room.token) {
+        return Response.json({
+          ok: false,
+          error: `Room '${room_id}' tidak punya token join dan tidak bisa dimasuki lagi. Buat room baru.`,
+        });
+      }
+      if (!token) {
+        return Response.json({ ok: false, error: "Token wajib diisi untuk join room." });
+      }
+      if (room.token !== token) {
         return Response.json({ ok: false, error: "Token salah." });
       }
       return Response.json({ ok: true, room });
@@ -1924,6 +1940,16 @@ export class AgentLinkRegistry extends DurableObject {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Ambil token room dari header `X-Room-Token` lebih dulu, baru fallback ke query
+ * `?token=`. Header didahulukan supaya klien browser tidak perlu menaruh kunci
+ * di URL, yang akan bocor ke history, header Referer, dan log akses.
+ * Query param dipertahankan demi kompatibilitas MCP client yang sudah beredar.
+ */
+function readRoomToken(request: Request, url: URL): string {
+  return request.headers.get("X-Room-Token") || url.searchParams.get("token") || "";
+}
 
 function generateId(len: number): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

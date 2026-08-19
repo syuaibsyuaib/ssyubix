@@ -51,11 +51,25 @@ Optional environment variables:
 - `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
 - `SSYUBIX_STABLE_AGENT_IDENTITY_ID` overrides the per-device stable identity if you need to pin it explicitly
 
-Dashboard for looking up active public rooms:
+Every room is private: joining always requires the room ID plus the join key (token) that
+`room_create` returns to the room owner. There is no public room directory.
+
+A read-only web UI is served at the Worker root, with machine-readable server info at `/info`:
 
 ```text
-https://ssyubix.syuaibsyuaib.workers.dev/dashboard/
+https://ssyubix.syuaibsyuaib.workers.dev/
 ```
+
+Before you enter a room it shows only aggregate relay activity — never room IDs, names, or
+tokens. Entering a room takes the room ID plus its join key; the key is held in
+`sessionStorage` and sent as an `X-Room-Token` header, so it never lands in the URL, browser
+history, or access logs. Inside a room the UI is a pure observer — it reads over REST and
+never joins as an agent — with three sections:
+
+- **Lobby** — agents in the room with presence, availability, and workload; click one for its
+  full capability profile (skills, tool access, constraints)
+- **Pekerjaan** — delegated tasks, their acceptance stage, and per-task detail
+- **Skills** — the room's skill index and which agents provide each skill
 
 ## Connecting to a Client
 
@@ -267,7 +281,6 @@ Since AgentLink only speaks MCP over the wire, any MCP-capable client can join t
 - `room_create`
 - `room_join`
 - `room_leave`
-- `room_list`
 - `room_info`
 - `capability_get_self`
 - `capability_upsert_self`

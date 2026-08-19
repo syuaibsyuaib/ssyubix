@@ -6,12 +6,40 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-19
+
+Every room is now private. Joining requires the room ID plus the join key its owner
+received at creation, and there is no longer any way to discover a room without both.
+
+### Removed
+
+- **Breaking:** Removed the public room system. `POST /rooms` no longer accepts `is_private`, and every room is created with a join token
+- **Breaking:** Removed the `room_list` MCP tool, which existed only to discover public rooms
+- **Breaking:** Removed the room listing from `GET /rooms`, which no longer returns room IDs, names, or tokens
+
+### Changed
+
+- **Breaking:** `room_join` now requires a token; `room_id` alone is no longer sufficient
+- **Breaking:** `GET /rooms` now returns aggregate activity counts (active rooms, total rooms, agents) instead of an array of rooms
+- **Breaking:** `GET /` now serves the web UI; machine-readable server info moved to `GET /info`, and `/dashboard` redirects to `/`
+- **Breaking:** Rooms stored under the old public mode have no token to verify and are refused rather than left open to anyone holding the room ID
+- Changed the relay to accept the room token via an `X-Room-Token` header, keeping `?token=` for existing MCP clients
+- Changed private-room token rotation documentation to cover every room, since the public-room exception no longer exists
+
 ### Added
 
+- Added a token-gated web UI at the Worker root with a Room ID and key form, deliberately without a room list
+- Added a Lobby section listing room agents with presence, availability, and workload, plus per-agent capability profiles
+- Added a task section showing delegated work and its acceptance stage, and a skill index section for the room
 - Added room role model documentation for `owner`, `admin`, and implicit member governance in `ssyubix` rooms
 - Added `room_resume_context` design documentation for local recovery and context continuity
 - Added room banlist design documentation for owner/admin blocking based on `stable_agent_identity_id`
 - Added private-room token rotation design documentation for ban-response and leakage recovery
+
+### Security
+
+- The join token is now the sole access control for every room, and is enforced on every room-scoped read
+- The web UI holds the key in `sessionStorage` and sends it as a header, keeping it out of URLs, browser history, and access logs
 
 ## [2.3.0] - 2026-03-09
 

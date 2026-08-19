@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Batalkan run lama saat ada push baru ke ref yang sama.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-package:
     runs-on: ubuntu-latest
@@ -23,6 +28,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install package and build tools
         run: |
@@ -46,12 +52,16 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "20"
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      # Glob, bukan daftar manual: file test baru di src/ ikut terjaring sendiri.
       - name: Run Worker unit tests
-        run: npx -y tsx --test src/room-meta.test.ts src/message-protocol.test.ts src/presence.test.ts
+        run: npx tsx --test src/*.test.ts
 
+      # tsx dan wrangler diambil dari node_modules hasil `npm ci`, supaya versi
+      # yang diuji CI sama dengan yang dipakai proyek.
       - name: Validate Worker bundle
-        run: npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
+        run: npx wrangler deploy --config src/wrangler.jsonc --dry-run
