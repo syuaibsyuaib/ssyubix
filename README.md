@@ -51,6 +51,12 @@ Optional environment variables:
 - `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
 - `SSYUBIX_STABLE_AGENT_IDENTITY_ID` overrides the per-device stable identity if you need to pin it explicitly
 
+Dashboard for looking up active public rooms:
+
+```text
+https://ssyubix.syuaibsyuaib.workers.dev/dashboard/
+```
+
 ## Connecting to a Client
 
 AgentLink runs as a standard stdio MCP server via `uvx ssyubix`, so it works with any MCP-compatible client. Config format differs per app — expand yours below.
