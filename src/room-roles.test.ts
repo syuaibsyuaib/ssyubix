@@ -50,7 +50,7 @@ test("grantRoomAdmin requires the owner as actor", () => {
   );
 
   assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /Hanya owner/);
+  assert.match(result.error ?? "", /Only the owner may grant admin/);
 });
 
 test("grantRoomAdmin adds a new admin once", () => {
@@ -83,7 +83,7 @@ test("revokeRoomAdmin rejects attempts to revoke the owner", () => {
   );
 
   assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /Owner tidak bisa dihapus/);
+  assert.match(result.error ?? "", /owner cannot be stripped/);
 });
 
 test("revokeRoomAdmin removes an admin for the owner", () => {

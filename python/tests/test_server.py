@@ -841,12 +841,12 @@ class CapabilityResourceTests(unittest.IsolatedAsyncioTestCase):
         fake_session = _FakeCapabilitySession(
             _FakeCapabilityResponse(
                 status=403,
-                payload={"success": False, "error": "Token salah."},
+                payload={"success": False, "error": "Room ID or token is wrong."},
             )
         )
         server.http_session = fake_session
 
-        with self.assertRaisesRegex(RuntimeError, "Token salah"):
+        with self.assertRaisesRegex(RuntimeError, "Room ID or token is wrong"):
             await server._fetch_capability_resource("ROOM42", "agents")
 
 
@@ -966,7 +966,7 @@ class CapabilityToolTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(await server.capability_remove_self())
 
         self.assertTrue(payload["success"])
-        self.assertIn("kustom dihapus", payload["message"])
+        self.assertIn("Custom capability profile removed", payload["message"])
         self.assertEqual(payload["agent"]["skills"], [])
 
 

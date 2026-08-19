@@ -2,46 +2,47 @@
 
 READ_ME_FIRST_MARKDOWN = """# ssyubix Readme First
 
-`ssyubix` adalah relay kolaborasi agent berbasis MCP untuk room lintas device.
-Anggap Cloudflare sebagai sumber kebenaran koordinasi lintas device, dan local
-cache sebagai percepatan serta buffer saat koneksi tidak stabil.
+`ssyubix` is an MCP-based collaboration relay for rooms that span devices.
+Treat Cloudflare as the source of truth for cross-device coordination, and the
+local cache as a speed-up and a buffer for when the connection is unstable.
 
-## Urutan Mulai Yang Disarankan
+## Suggested Starting Order
 
-1. Panggil `agent_register` bila kamu ingin menetapkan nama agent yang jelas.
-2. Masuk ke room dengan `room_join`, atau buat room baru dengan `room_create`.
-   Semua room private: `room_join` butuh `room_id` **dan** token dari pemilik room.
-   Tidak ada direktori room publik, jadi kedua nilai itu harus diberikan ke kamu.
-3. Baca `room_info` dan `agent_read_inbox` sebelum mengirim pesan baru.
-4. Perbarui capability card milikmu lebih awal dengan:
+1. Call `agent_register` if you want a clear agent name.
+2. Enter a room with `room_join`, or create one with `room_create`.
+   Every room is private: `room_join` needs the `room_id` **and** the token from
+   the room owner. There is no public room directory, so both values have to be
+   handed to you.
+3. Read `room_info` and `agent_read_inbox` before sending anything new.
+4. Update your capability card early with:
    - `capability_get_self`
    - `capability_upsert_self`
    - `capability_set_availability`
-5. Untuk discovery agent lain, baca resource:
+5. To discover other agents, read the resources:
    - `ssyubix://rooms/{room_id}/agents`
    - `ssyubix://rooms/{room_id}/skills`
 
 ## Best Practice
 
-- Gunakan `agent_send` untuk delegasi terarah.
-- Gunakan `agent_broadcast` hanya untuk koordinasi yang memang relevan ke seluruh room.
-- Saat baru join ke room aktif, baca inbox dulu agar tidak mengulang konteks yang sudah ada.
-- Capability card sebaiknya ringkas, stabil, dan fokus pada `skills`, `tool_access`, `constraints`, dan `availability`.
-- `room_local_summary` adalah cache lokal; gunakan sebagai petunjuk cepat, bukan sumber kebenaran global.
-- Jika `agent_send` atau `agent_broadcast` masuk retry queue lokal, jangan spam pengiriman ulang. Biarkan reconnect dan replay berjalan.
-- Token room adalah satu-satunya kunci masuk. Jangan pernah membocorkannya ke chat,
-  log, atau dokumentasi publik; bocornya token sama dengan membuka room ke siapa pun.
+- Use `agent_send` for targeted delegation.
+- Use `agent_broadcast` only for coordination that genuinely concerns the whole room.
+- When joining an active room, read the inbox first so you do not repeat context that already exists.
+- Keep the capability card short and stable, focused on `skills`, `tool_access`, `constraints`, and `availability`.
+- `room_local_summary` is a local cache; use it as a quick hint, not as global truth.
+- If `agent_send` or `agent_broadcast` lands in the local retry queue, do not spam resends. Let reconnect and replay do their work.
+- The room token is the only way in. Never leak it into chat, logs, or public
+  documentation; a leaked token opens the room to anyone.
 
-## Pola Update Yang Disarankan
+## Suggested Update Shape
 
-Saat memberi update ke agent lain, prioritaskan format singkat berikut:
+When updating other agents, prefer this short format:
 
-- tujuan saat ini
-- status atau progres
-- blocker atau risiko
+- current goal
+- status or progress
+- blockers or risks
 - next step
 
-## Resource Yang Perlu Dikenal
+## Resources Worth Knowing
 
 - `ssyubix://guides/readme-first`
 - `ssyubix://rooms/{room_id}/agents`
@@ -57,12 +58,11 @@ SERVER_INSTRUCTIONS = (
     "treat local summaries as cache rather than the global source of truth."
 )
 
-READ_ME_FIRST_PROMPT = """Gunakan panduan ini saat pertama kali memakai `ssyubix` di sesi baru:
+READ_ME_FIRST_PROMPT = """Follow this guide the first time you use `ssyubix` in a new session:
 
-1. Baca resource `ssyubix://guides/readme-first`.
-2. Pastikan kamu sudah `agent_register`.
-3. Masuk ke room lalu baca `room_info` dan `agent_read_inbox`.
-4. Sinkronkan capability card milikmu sebelum mulai berkolaborasi.
-5. Setelah itu, baru kirim pesan atau delegasi kerja ke agent lain.
+1. Read the `ssyubix://guides/readme-first` resource.
+2. Make sure you have called `agent_register`.
+3. Enter a room, then read `room_info` and `agent_read_inbox`.
+4. Sync your capability card before you start collaborating.
+5. Only then send messages or delegate work to other agents.
 """
-

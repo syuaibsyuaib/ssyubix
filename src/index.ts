@@ -217,7 +217,7 @@ export default {
       if (!adminToken) {
         return Response.json({
           success: false,
-          error: "Endpoint admin tidak aktif: REGISTRY_ADMIN_TOKEN belum diset.",
+          error: "Admin endpoint is disabled: REGISTRY_ADMIN_TOKEN is not set.",
         }, { status: 404, headers: corsHeaders });
       }
       if (!timingSafeEqual(request.headers.get("X-Admin-Token") || "", adminToken)) {
@@ -270,7 +270,7 @@ export default {
       if (!ownerStableIdentityId) {
         return Response.json({
           success: false,
-          error: "owner_stable_identity_id wajib diisi untuk membuat room.",
+          error: "owner_stable_identity_id is required to create a room.",
         }, { status: 400, headers: corsHeaders });
       }
       const room_id = generateId(6);
@@ -301,8 +301,8 @@ export default {
         owner_stable_identity_id: ownerStableIdentityId,
         role_label: "owner",
         message:
-          `Bagikan room_id '${room_id}' dan token ke peer. Token wajib untuk join — ` +
-          `simpan sekarang karena tidak ditampilkan lagi di listing publik.`,
+          `Share room_id '${room_id}' and its token with your peers. The token is ` +
+          `required to join — save it now, it is never shown in any public listing.`,
       }, { headers: corsHeaders });
     }
 
@@ -552,8 +552,8 @@ export class AgentLinkRoom extends DurableObject {
       presence_checkpoint_interval_seconds: heartbeat.presence_checkpoint_interval_seconds,
       agents: existingAgents,
       message: session.reconnected
-        ? `Berhasil terhubung kembali ke room '${roomId}'.`
-        : `Selamat datang di room '${roomId}'.`,
+        ? `Reconnected to room '${roomId}'.`
+        : `Welcome to room '${roomId}'.`,
     }));
 
     // Broadcast ke semua agent lain: ada yang join
@@ -692,7 +692,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!title || title.length > 140) {
         ws.send(JSON.stringify({
           type: "error",
-          error: "title task wajib diisi dan maksimal 140 karakter.",
+          error: "A task title is required and must be at most 140 characters.",
           request_id: requestId,
           code: "invalid_task_title",
         }));
@@ -702,7 +702,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetAgentId) {
         ws.send(JSON.stringify({
           type: "error",
-          error: "to_agent_id wajib diisi untuk delegation offer.",
+          error: "to_agent_id is required for a delegation offer.",
           request_id: requestId,
           code: "missing_task_target",
         }));
@@ -712,7 +712,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetState) {
         ws.send(JSON.stringify({
           type: "error",
-          error: `Agent tujuan '${targetAgentId}' tidak sedang aktif di room ini.`,
+          error: `Target agent '${targetAgentId}' is not active in this room.`,
           request_id: requestId,
           code: "task_target_not_active",
         }));
@@ -721,7 +721,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetState.stable_agent_identity_id) {
         ws.send(JSON.stringify({
           type: "error",
-          error: `Agent tujuan '${targetAgentId}' belum punya stable identity.`,
+          error: `Target agent '${targetAgentId}' has no stable identity yet.`,
           request_id: requestId,
           code: "task_target_missing_identity",
         }));
@@ -739,7 +739,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!pointOfContactState) {
         ws.send(JSON.stringify({
           type: "error",
-          error: `point_of_contact_agent_id '${pointOfContactAgentId}' tidak aktif di room ini.`,
+          error: `point_of_contact_agent_id '${pointOfContactAgentId}' is not active in this room.`,
           request_id: requestId,
           code: "task_invalid_point_of_contact",
         }));
@@ -806,7 +806,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!taskId) {
         ws.send(JSON.stringify({
           type: "error",
-          error: "task_id wajib diisi.",
+          error: "task_id is required.",
           request_id: requestId,
           code: "missing_task_id",
         }));
@@ -828,7 +828,7 @@ export class AgentLinkRoom extends DurableObject {
       ) {
         ws.send(JSON.stringify({
           type: "error",
-          error: "deferred_until harus berupa waktu ISO-8601 yang valid.",
+          error: "deferred_until must be a valid ISO-8601 timestamp.",
           request_id: requestId,
           code: "invalid_task_deferred_until",
         }));
@@ -868,7 +868,7 @@ export class AgentLinkRoom extends DurableObject {
       if (result.error || !result.task) {
         ws.send(JSON.stringify({
           type: "error",
-          error: result.error || "Gagal memutakhirkan delegation task.",
+          error: result.error || "Could not update the delegation task.",
           request_id: requestId,
           code: `task_${msg.type}_failed`,
         }));
@@ -921,7 +921,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetAgentId) {
         ws.send(JSON.stringify({
           type: "error",
-          error: "target_agent_id wajib diisi.",
+          error: "target_agent_id is required.",
           request_id: requestId,
           code: "missing_room_role_target",
         }));
@@ -931,7 +931,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetState) {
         ws.send(JSON.stringify({
           type: "error",
-          error: `Agent target '${targetAgentId}' tidak sedang aktif di room ini.`,
+          error: `Target agent '${targetAgentId}' is not active in this room.`,
           request_id: requestId,
           code: "room_role_target_not_active",
         }));
@@ -940,7 +940,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!targetState.stable_agent_identity_id) {
         ws.send(JSON.stringify({
           type: "error",
-          error: `Agent target '${targetAgentId}' belum punya stable identity.`,
+          error: `Target agent '${targetAgentId}' has no stable identity yet.`,
           request_id: requestId,
           code: "room_role_target_missing_identity",
         }));
@@ -957,7 +957,7 @@ export class AgentLinkRoom extends DurableObject {
       if (!roleMutation.ok) {
         ws.send(JSON.stringify({
           type: "error",
-          error: roleMutation.error || "Gagal memutakhirkan role room.",
+          error: roleMutation.error || "Could not update the room role.",
           request_id: requestId,
           code: msg.type === "room_admin_add"
             ? "room_admin_add_failed"
@@ -1283,7 +1283,7 @@ export class AgentLinkRoom extends DurableObject {
     } catch (error) {
       // Angka dashboard tidak boleh menghambat room. Biarkan lastReported apa adanya
       // supaya laporan berikutnya mencoba lagi.
-      console.error("Gagal melaporkan agent_count ke registry:", error);
+      console.error("Failed to report agent_count to the registry:", error);
     }
   }
 
@@ -1692,7 +1692,7 @@ export class AgentLinkRoom extends DurableObject {
     const task = getTask(manifest, taskId);
     if (!task) {
       return Response.json(
-        { success: false, error: `Task '${taskId}' tidak ditemukan.` },
+        { success: false, error: `Task '${taskId}' not found.` },
         { status: 404 },
       );
     }
@@ -1730,7 +1730,7 @@ export class AgentLinkRoom extends DurableObject {
       const agent = profiles.find((profile) => profile.agent_id === entryId);
       if (!agent) {
         return Response.json(
-          { success: false, error: `Capability profile '${entryId}' tidak ditemukan.` },
+          { success: false, error: `Capability profile '${entryId}' not found.` },
           { status: 404 },
         );
       }
@@ -1757,7 +1757,7 @@ export class AgentLinkRoom extends DurableObject {
       const skill = skills.find((entry) => entry.skill_id === entryId);
       if (!skill) {
         return Response.json(
-          { success: false, error: `Skill '${entryId}' tidak ditemukan.` },
+          { success: false, error: `Skill '${entryId}' not found.` },
           { status: 404 },
         );
       }
@@ -1987,7 +1987,7 @@ export class AgentLinkRegistry extends DurableObject {
       const count = body.agent_count;
       if (!roomId || !Number.isInteger(count) || (count as number) < 0) {
         return Response.json(
-          { ok: false, error: "room_id dan agent_count (bilangan bulat >= 0) wajib." },
+          { ok: false, error: "room_id and agent_count (an integer >= 0) are required." },
           { status: 400 },
         );
       }
@@ -2010,7 +2010,7 @@ export class AgentLinkRegistry extends DurableObject {
       const room = await this.ctx.storage.get<RoomMeta>(`room:${room_id}`);
       if (!room) {
         return Response.json(
-          { ok: false, error: `Room '${room_id}' tidak ditemukan.` },
+          { ok: false, error: `Room '${room_id}' not found.` },
           { status: 404 },
         );
       }
@@ -2025,7 +2025,7 @@ export class AgentLinkRegistry extends DurableObject {
       // Diperiksa sebelum room dibaca: ini soal bentuk permintaan, bukan soal room,
       // jadi menjawabnya spesifik tidak membocorkan apa pun tentang room mana pun.
       if (!token) {
-        return Response.json({ ok: false, error: "Token wajib diisi untuk join room." });
+        return Response.json({ ok: false, error: "A token is required to join a room." });
       }
 
       const room = await this.ctx.storage.get<RoomMeta>(`room:${room_id}`);
@@ -2035,7 +2035,7 @@ export class AgentLinkRegistry extends DurableObject {
       // memberi tahu penebak bahwa sebuah Room ID itu ada tanpa perlu tokennya,
       // padahal justru itu yang kita rahasiakan.
       if (!room || !room.token || !timingSafeEqual(token, room.token)) {
-        return Response.json({ ok: false, error: "Room ID atau token salah." });
+        return Response.json({ ok: false, error: "Room ID or token is wrong." });
       }
 
       return Response.json({ ok: true, room });
@@ -2055,7 +2055,7 @@ export class AgentLinkRegistry extends DurableObject {
       const room = await this.ctx.storage.get<RoomMeta>(`room:${roomId}`);
       if (!room) {
         return Response.json(
-          { ok: false, error: `Room '${roomId}' tidak ditemukan.` },
+          { ok: false, error: `Room '${roomId}' not found.` },
           { status: 404 },
         );
       }

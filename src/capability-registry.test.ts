@@ -305,9 +305,9 @@ test("validateCapabilityProfilePatch rejects unsupported and invalid values", ()
 
   assert.equal(result.ok, false);
   assert.deepEqual(result.errors, [
-    "Field 'unknown_field' tidak didukung untuk capability update.",
-    "availability harus salah satu dari: available, busy, away, dnd.",
-    "current_load tidak boleh melebihi max_concurrent_tasks.",
+    "Field 'unknown_field' is not supported for a capability update.",
+    "availability must be one of: available, busy, away, dnd.",
+    "current_load must not exceed max_concurrent_tasks.",
   ]);
 });
 

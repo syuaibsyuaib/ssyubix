@@ -10,6 +10,10 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Added `POST /admin/prune-rooms` for deleting registry entries of rooms left unjoinable by the move to private-only rooms. It is disabled unless the `REGISTRY_ADMIN_TOKEN` secret is set, requires that token in an `X-Admin-Token` header, defaults to a dry run, and can only delete rooms that have no join token
 
+### Changed
+
+- Every message the relay and the Python MCP client emit is now English: validation and authorization errors, ACK timeouts, retry-queue notices, room welcome text, MCP tool parameter descriptions, and the `ssyubix://guides/readme-first` onboarding guide. Code comments stay in Indonesian
+
 ### Security
 
 - Room authentication no longer reveals whether a room ID exists. "Room not found" and "wrong token" previously returned different errors, which confirmed a room ID to anyone guessing without needing its token; both now return the same message. A missing token is still reported distinctly, since that check runs before the room is read and describes the request rather than any room

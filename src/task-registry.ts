@@ -280,17 +280,17 @@ export function acceptDelegationOffer(
 ): { changed: boolean; task?: StoredTaskManifest; error?: string } {
   const task = manifest.tasks[params.taskId];
   if (!task) {
-    return { changed: false, error: "Task tidak ditemukan." };
+    return { changed: false, error: "Task not found." };
   }
   if (task.offered_to_identity_id) {
     if (task.offered_to_identity_id !== params.actorIdentityId) {
-      return { changed: false, error: "Hanya agent tujuan yang boleh menerima task ini." };
+      return { changed: false, error: "Only the agent the task was offered to may accept it." };
     }
   } else if (task.offered_to_agent_id !== params.actorAgentId) {
-    return { changed: false, error: "Hanya agent tujuan yang boleh menerima task ini." };
+    return { changed: false, error: "Only the agent the task was offered to may accept it." };
   }
   if (task.acceptance_state === "rejected") {
-    return { changed: false, error: "Task yang sudah ditolak harus ditawarkan ulang, bukan diterima langsung." };
+    return { changed: false, error: "A rejected task must be offered again rather than accepted directly." };
   }
   if (task.acceptance_state === "accepted") {
     return { changed: false, task };
@@ -327,20 +327,20 @@ export function rejectDelegationOffer(
 ): { changed: boolean; task?: StoredTaskManifest; error?: string } {
   const task = manifest.tasks[params.taskId];
   if (!task) {
-    return { changed: false, error: "Task tidak ditemukan." };
+    return { changed: false, error: "Task not found." };
   }
   if (task.offered_to_identity_id) {
     if (task.offered_to_identity_id !== params.actorIdentityId) {
-      return { changed: false, error: "Hanya agent tujuan yang boleh menolak task ini." };
+      return { changed: false, error: "Only the agent the task was offered to may reject it." };
     }
   } else if (task.offered_to_agent_id !== params.actorAgentId) {
-    return { changed: false, error: "Hanya agent tujuan yang boleh menolak task ini." };
+    return { changed: false, error: "Only the agent the task was offered to may reject it." };
   }
   if (task.acceptance_state === "rejected") {
     return { changed: false, task };
   }
   if (task.acceptance_state === "accepted") {
-    return { changed: false, error: "Task sudah diterima dan tidak bisa ditolak lagi." };
+    return { changed: false, error: "The task was already accepted and can no longer be rejected." };
   }
   const nextTask: StoredTaskManifest = {
     ...task,
@@ -375,20 +375,20 @@ export function deferDelegationOffer(
 ): { changed: boolean; task?: StoredTaskManifest; error?: string } {
   const task = manifest.tasks[params.taskId];
   if (!task) {
-    return { changed: false, error: "Task tidak ditemukan." };
+    return { changed: false, error: "Task not found." };
   }
   if (task.offered_to_identity_id) {
     if (task.offered_to_identity_id !== params.actorIdentityId) {
-      return { changed: false, error: "Hanya agent tujuan yang boleh menunda task ini." };
+      return { changed: false, error: "Only the agent the task was offered to may defer it." };
     }
   } else if (task.offered_to_agent_id !== params.actorAgentId) {
-    return { changed: false, error: "Hanya agent tujuan yang boleh menunda task ini." };
+    return { changed: false, error: "Only the agent the task was offered to may defer it." };
   }
   if (task.acceptance_state === "rejected") {
-    return { changed: false, error: "Task yang sudah ditolak tidak bisa di-defer lagi." };
+    return { changed: false, error: "A rejected task can no longer be deferred." };
   }
   if (task.acceptance_state === "accepted") {
-    return { changed: false, error: "Task yang sudah diterima tidak bisa di-defer lagi." };
+    return { changed: false, error: "An accepted task can no longer be deferred." };
   }
   const nextTask: StoredTaskManifest = {
     ...task,

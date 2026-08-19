@@ -98,7 +98,7 @@ export function grantRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Room belum punya owner yang valid.",
+      error: "The room has no valid owner yet.",
     };
   }
   if (!actorStableIdentityId) {
@@ -106,7 +106,7 @@ export function grantRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Stable identity pelaku tidak valid.",
+      error: "The actor's stable identity is invalid.",
     };
   }
   if (actorStableIdentityId !== normalizedState.owner_stable_identity_id) {
@@ -114,7 +114,7 @@ export function grantRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Hanya owner yang boleh menambahkan admin.",
+      error: "Only the owner may grant admin.",
     };
   }
   if (!targetStableIdentityId) {
@@ -122,7 +122,7 @@ export function grantRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Stable identity target tidak valid.",
+      error: "The target's stable identity is invalid.",
     };
   }
   if (targetStableIdentityId === normalizedState.owner_stable_identity_id) {
@@ -174,7 +174,7 @@ export function revokeRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Room belum punya owner yang valid.",
+      error: "The room has no valid owner yet.",
     };
   }
   if (!actorStableIdentityId) {
@@ -182,7 +182,7 @@ export function revokeRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Stable identity pelaku tidak valid.",
+      error: "The actor's stable identity is invalid.",
     };
   }
   if (actorStableIdentityId !== normalizedState.owner_stable_identity_id) {
@@ -190,7 +190,7 @@ export function revokeRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Hanya owner yang boleh menghapus admin.",
+      error: "Only the owner may revoke admin.",
     };
   }
   if (!targetStableIdentityId) {
@@ -198,7 +198,7 @@ export function revokeRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Stable identity target tidak valid.",
+      error: "The target's stable identity is invalid.",
     };
   }
   if (targetStableIdentityId === normalizedState.owner_stable_identity_id) {
@@ -206,7 +206,7 @@ export function revokeRoomAdmin(
       ok: false,
       changed: false,
       role_state: normalizedState,
-      error: "Owner tidak bisa dihapus dari role owner lewat revoke admin.",
+      error: "The owner cannot be stripped of the owner role through revoke admin.",
     };
   }
   if (!normalizedState.admin_stable_identity_ids.includes(targetStableIdentityId)) {
