@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>AgentLink</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f1117;
+      color: #e4e4e7;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    header { margin-bottom: 28px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    h1 span { color: #f97316; }
+    .subtitle { color: #a1a1aa; font-size: 14px; }
+
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+
+    .stats { display: flex; gap: 16px; margin-bottom: 24px; }
+    .stat-card {
+      background: #1a1b26; border: 1px solid #2a2b3a;
+      border-radius: 12px; padding: 16px 20px; flex: 1;
+    }
+    .stat-card .label {
+      font-size: 12px; color: #a1a1aa;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .stat-card .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    .stat-card .value.active { color: #22c55e; }
+    .stat-card .value.total { color: #3b82f6; }
+    .stat-card .value.agents { color: #a855f7; }
+
+    .panel {
+      background: #1a1b26; border: 1px solid #2a2b3a;
+      border-radius: 12px; padding: 20px 24px;
+    }
+    .panel + .panel { margin-top: 16px; }
+    .panel h2 { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+    .panel .hint { font-size: 13px; color: #a1a1aa; line-height: 1.6; margin-bottom: 16px; }
+
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block; font-size: 12px; color: #a1a1aa;
+      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%; background: #0f1117; border: 1px solid #2a2b3a;
+      border-radius: 8px; padding: 10px 12px; color: #e4e4e7;
+      font-size: 14px; font-family: 'SF Mono', Monaco, monospace;
+    }
+    .field input:focus-visible { outline: 2px solid #f97316; outline-offset: 1px; border-color: #f97316; }
+    .field .note { font-size: 12px; color: #71717a; margin-top: 6px; }
+
+    button {
+      background: #1a1b26; border: 1px solid #2a2b3a; color: #e4e4e7;
+      padding: 9px 16px; border-radius: 8px; cursor: pointer;
+      font-size: 13px; transition: border-color 0.2s, color 0.2s;
+    }
+    button:hover:not(:disabled) { border-color: #f97316; color: #f97316; }
+    button:focus-visible { outline: 2px solid #f97316; outline-offset: 2px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary { background: #f97316; border-color: #f97316; color: #0f1117; font-weight: 600; }
+    button.primary:hover:not(:disabled) { background: #ea6a0c; color: #0f1117; }
+
+    .form-error {
+      background: #ef444418; border: 1px solid #ef444455; color: #fca5a5;
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 14px;
+    }
+
+    .roombar {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .roombar .room-id {
+      font-family: 'SF Mono', Monaco, monospace; font-size: 18px;
+      font-weight: 700; color: #f97316;
+    }
+    .roombar .room-sub { font-size: 12px; color: #a1a1aa; margin-top: 2px; }
+
+    .tabs {
+      display: flex; gap: 4px; border-bottom: 1px solid #2a2b3a;
+      margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .tab {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      border-radius: 0; padding: 10px 14px; color: #a1a1aa; font-size: 14px;
+    }
+    .tab:hover:not(:disabled) { color: #e4e4e7; border-color: #3a3b4a; }
+    .tab[aria-selected="true"] { color: #f97316; border-color: #f97316; font-weight: 600; }
+
+    .card {
+      background: #1a1b26; border: 1px solid #2a2b3a; border-radius: 12px;
+      padding: 16px 20px; margin-bottom: 12px; width: 100%; text-align: left;
+      display: block; transition: border-color 0.2s;
+    }
+    button.card { cursor: pointer; color: inherit; font-size: inherit; }
+    button.card:hover { border-color: #f97316; }
+    .card-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+    }
+    .card-title { font-size: 16px; font-weight: 600; }
+    .card-meta {
+      display: flex; gap: 16px; font-size: 13px; color: #a1a1aa; flex-wrap: wrap;
+    }
+    .mono {
+      font-family: 'SF Mono', Monaco, monospace; font-size: 12px;
+      color: #a1a1aa; background: #0f1117; padding: 3px 7px; border-radius: 5px;
+    }
+
+    .badge {
+      display: inline-block; padding: 3px 9px; border-radius: 5px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .badge.online     { background: #22c55e22; color: #4ade80; }
+    .badge.offline    { background: #71717a22; color: #a1a1aa; }
+    .badge.available  { background: #22c55e22; color: #4ade80; }
+    .badge.busy       { background: #f9731622; color: #fb923c; }
+    .badge.away       { background: #a855f722; color: #c084fc; }
+    .badge.offline_av { background: #71717a22; color: #a1a1aa; }
+    .badge.accepted   { background: #22c55e22; color: #4ade80; }
+    .badge.waiting    { background: #3b82f622; color: #60a5fa; }
+    .badge.rejected   { background: #ef444422; color: #fca5a5; }
+    .badge.deferred   { background: #a855f722; color: #c084fc; }
+    .badge.high       { background: #ef444422; color: #fca5a5; }
+    .badge.normal     { background: #3b82f622; color: #60a5fa; }
+    .badge.low        { background: #71717a22; color: #a1a1aa; }
+
+    .progress-row { display: flex; gap: 10px; margin: 16px 0 4px; flex-wrap: wrap; }
+    .progress-seg { flex: 1; min-width: 120px; }
+    .progress-seg .bar { height: 6px; border-radius: 3px; background: #2a2b3a; overflow: hidden; }
+    .progress-seg .bar span { display: block; height: 100%; }
+    .progress-seg .bar span.accepted { background: #22c55e; }
+    .progress-seg .bar span.waiting  { background: #3b82f6; }
+    .progress-seg .bar span.rejected { background: #ef4444; }
+    .progress-seg .bar span.deferred { background: #a855f7; }
+    .progress-seg .cap {
+      font-size: 12px; color: #a1a1aa; margin-top: 6px;
+      display: flex; justify-content: space-between; gap: 8px;
+    }
+
+    .stage {
+      display: flex; align-items: center; gap: 8px;
+      margin: 14px 0; flex-wrap: wrap; font-size: 12px;
+    }
+    .stage .step {
+      padding: 4px 10px; border-radius: 5px;
+      background: #0f1117; border: 1px solid #2a2b3a; color: #71717a;
+    }
+    .stage .step.done { border-color: #22c55e55; color: #4ade80; }
+    .stage .step.current { border-color: #f97316; color: #f97316; font-weight: 600; }
+    .stage .step.failed { border-color: #ef444455; color: #fca5a5; }
+    .stage .arrow { color: #3a3b4a; }
+
+    .kv { display: grid; grid-template-columns: minmax(140px, auto) 1fr; gap: 8px 18px; font-size: 13px; }
+    .kv dt { color: #a1a1aa; }
+    .kv dd { color: #e4e4e7; word-break: break-word; }
+
+    .chip {
+      display: inline-block; background: #0f1117; border: 1px solid #2a2b3a;
+      border-radius: 5px; padding: 3px 9px; font-size: 12px; color: #a1a1aa;
+      margin: 0 6px 6px 0;
+    }
+
+    .section-label {
+      font-size: 12px; color: #a1a1aa; text-transform: uppercase;
+      letter-spacing: 0.5px; margin: 16px 0 8px;
+    }
+    .empty-state, .loading { text-align: center; padding: 40px; color: #a1a1aa; }
+    .error-state { text-align: center; padding: 40px; color: #ef4444; }
+    .last-updated { font-size: 12px; color: #a1a1aa; margin-top: 16px; text-align: right; }
+    .backlink { margin-bottom: 14px; }
+    [hidden] { display: none !important; }
+
+    @media (max-width: 560px) {
+      .stats { flex-direction: column; }
+      .kv { grid-template-columns: 1fr; gap: 2px 0; }
+      .kv dd { margin-bottom: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Agent<span>Link</span></h1>
+      <p class="subtitle" id="subtitle">Semua room bersifat private — masuk dengan Room ID dan kunci</p>
+    </header>
+
+    <!-- ══ Gate: statistik + form masuk ══ -->
+    <div id="view-gate">
+      <div class="stats">
+        <div class="stat-card">
+          <div class="label" id="label-active">Room Aktif</div>
+          <div class="value active" id="stat-active">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Total Room</div>
+          <div class="value total" id="stat-total">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Agent di Room Aktif</div>
+          <div class="value agents" id="stat-agents">—</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Masuk ke room</h2>
+        <p class="hint">
+          Tidak ada daftar room di halaman ini. Menampilkan ID room sama saja membocorkan
+          separuh kredensial join, jadi kamu perlu Room ID <strong>dan</strong> kunci yang
+          diberikan langsung oleh pemilik room.
+        </p>
+
+        <div class="form-error" id="gate-error" hidden></div>
+
+        <form id="gate-form" autocomplete="off">
+          <div class="field">
+            <label for="input-room">Room ID</label>
+            <input id="input-room" name="room" type="text" inputmode="latin"
+                   maxlength="6" placeholder="ABC123" spellcheck="false" required>
+            <p class="note">6 karakter huruf/angka.</p>
+          </div>
+          <div class="field">
+            <label for="input-token">Kunci room</label>
+            <input id="input-token" name="token" type="password"
+                   placeholder="••••••••••••" spellcheck="false" required>
+            <p class="note">
+              Disimpan di sessionStorage — hilang begitu tab ditutup, dan dikirim lewat
+              header, bukan URL.
+            </p>
+          </div>
+          <button class="primary" type="submit" id="gate-submit">Masuk</button>
+        </form>
+      </div>
+
+      <div class="last-updated" id="last-updated"></div>
+    </div>
+
+    <!-- ══ Room: lobby + tabs ══ -->
+    <div id="view-room" hidden>
+      <div class="roombar">
+        <div>
+          <div class="room-id" id="room-id-label">—</div>
+          <div class="room-sub" id="room-sub">—</div>
+        </div>
+        <div>
+          <button type="button" id="btn-refresh">↻ Refresh</button>
+          <button type="button" id="btn-leave">Keluar</button>
+        </div>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" id="tab-lobby"  aria-selected="true"  data-tab="lobby">Lobby</button>
+        <button class="tab" role="tab" id="tab-tasks"  aria-selected="false" data-tab="tasks">Pekerjaan</button>
+        <button class="tab" role="tab" id="tab-skills" aria-selected="false" data-tab="skills">Skills</button>
+      </div>
+
+      <div id="tab-content" role="tabpanel" aria-labelledby="tab-lobby">
+        <div class="loading">Memuat...</div>
+      </div>
+    </div>
+
+    <div id="sr-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // ── State ────────────────────────────────────────────────────────────────
+    var SESSION_KEY = 'agentlink.room.session';
+    var session = null;      // { room_id, token }
+    var activeTab = 'lobby';
+    var detail = null;       // { kind: 'agent'|'task', id }
+    var pollTimer = null;
+
+    // ── Util ─────────────────────────────────────────────────────────────────
+    function esc(str) {
+      var d = document.createElement('div');
+      d.textContent = str == null ? '' : String(str);
+      return d.innerHTML;
+    }
+
+    function $(id) { return document.getElementById(id); }
+
+    function say(msg) { $('sr-status').textContent = msg; }
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      var t = new Date(iso).getTime();
+      if (!isFinite(t)) return '—';
+      return new Date(t).toLocaleString('id-ID', {
+        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function timeAgo(iso) {
+      if (!iso) return '—';
+      var t = new Date(iso).getTime();
+      if (!isFinite(t)) return '—';
+      var diff = Date.now() - t;
+      var mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'baru saja';
+      if (mins < 60) return mins + ' menit lalu';
+      var hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + ' jam lalu';
+      return Math.floor(hrs / 24) + ' hari lalu';
+    }
+
+    // Kunci dikirim sebagai header supaya tidak masuk history / Referer / log akses.
+    function api(path) {
+      return fetch(path, {
+        headers: { 'X-Room-Token': session ? session.token : '' },
+        cache: 'no-store'
+      }).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          if (!res.ok) {
+            var err = new Error(body && body.error ? body.error : ('HTTP ' + res.status));
+            err.status = res.status;
+            throw err;
+          }
+          return body;
+        });
+      });
+    }
+
+    // ── Session ──────────────────────────────────────────────────────────────
+    function loadSession() {
+      try {
+        var raw = sessionStorage.getItem(SESSION_KEY);
+        if (!raw) return null;
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.room_id && parsed.token) return parsed;
+      } catch (e) { /* storage diblokir atau isinya rusak — perlakukan sebagai belum masuk */ }
+      return null;
+    }
+
+    function saveSession(s) {
+      try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    }
+
+    function clearSession() {
+      try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    // ── Gate: statistik agregat ──────────────────────────────────────────────
+    function loadStats() {
+      return fetch('/rooms', { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (s) {
+          if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('format tidak valid');
+          var days = Number(s.window_days) || 3;
+          $('stat-active').textContent = Number(s.active_room_count) || 0;
+          $('stat-total').textContent = Number(s.total_room_count) || 0;
+          $('stat-agents').textContent = Number(s.total_agent_count) || 0;
+          $('label-active').textContent = 'Room Aktif (' + days + ' hari)';
+          $('last-updated').textContent =
+            'Statistik diperbarui: ' + new Date().toLocaleTimeString('id-ID');
+        })
+        .catch(function (err) {
+          $('last-updated').textContent = 'Statistik gagal dimuat: ' + err.message;
+        });
+    }
+
+    // ── Masuk room ───────────────────────────────────────────────────────────
+    function showGateError(msg) {
+      var box = $('gate-error');
+      if (!msg) { box.hidden = true; box.textContent = ''; return; }
+      box.hidden = false;
+      box.textContent = msg;
+      say(msg);
+    }
+
+    function enterRoom(roomId, token) {
+      var prev = session;
+      session = { room_id: roomId, token: token };
+      return api('/capabilities/' + encodeURIComponent(roomId) + '/agents')
+        .then(function () {
+          saveSession(session);
+          showGateError('');
+          renderRoom();
+          say('Berhasil masuk ke room ' + roomId + '.');
+        })
+        .catch(function (err) {
+          session = prev;
+          if (err.status === 403) {
+            throw new Error('Room ID atau kunci salah.');
+          }
+          throw new Error('Gagal masuk: ' + err.message);
+        });
+    }
+
+    function leaveRoom() {
+      session = null;
+      detail = null;
+      activeTab = 'lobby';
+      clearSession();
+      stopPolling();
+      $('view-room').hidden = true;
+      $('view-gate').hidden = false;
+      $('subtitle').textContent = 'Semua room bersifat private — masuk dengan Room ID dan kunci';
+      $('input-token').value = '';
+      loadStats();
+      say('Sudah keluar dari room.');
+    }
+
+    // ── Render: kerangka room ────────────────────────────────────────────────
+    function renderRoom() {
+      $('view-gate').hidden = true;
+      $('view-room').hidden = false;
+      $('room-id-label').textContent = session.room_id;
+      $('subtitle').textContent = 'Room private — data hanya terlihat karena kunci yang kamu masukkan';
+      syncTabs();
+      renderActiveTab();
+      startPolling();
+    }
+
+    function syncTabs() {
+      ['lobby', 'tasks', 'skills'].forEach(function (name) {
+        var el = $('tab-' + name);
+        el.setAttribute('aria-selected', name === activeTab ? 'true' : 'false');
+      });
+      $('tab-content').setAttribute('aria-labelledby', 'tab-' + activeTab);
+    }
+
+    function setTab(name) {
+      if (activeTab === name && !detail) return;
+      activeTab = name;
+      detail = null;
+      syncTabs();
+      renderActiveTab();
+    }
+
+    function setBody(html) { $('tab-content').innerHTML = html; }
+
+    function renderActiveTab() {
+      setBody('<div class="loading">Memuat...</div>');
+      if (detail && detail.kind === 'agent') return renderAgentDetail(detail.id);
+      if (detail && detail.kind === 'task') return renderTaskDetail(detail.id);
+      if (activeTab === 'lobby') return renderLobby();
+      if (activeTab === 'tasks') return renderTasks();
+      if (activeTab === 'skills') return renderSkills();
+    }
+
+    function onLoadError(err) {
+      if (err.status === 403) {
+        // Kunci dicabut atau room dirotasi saat halaman terbuka.
+        leaveRoom();
+        showGateError('Kunci room tidak berlaku lagi. Masuk ulang dengan kunci terbaru.');
+        return;
+      }
+      setBody('<div class="error-state">Gagal memuat: ' + esc(err.message) + '</div>');
+    }
+
+    // ── Lobby: daftar agent ──────────────────────────────────────────────────
+    function availabilityClass(av) {
+      if (av === 'available' || av === 'busy' || av === 'away') return av;
+      return 'offline_av';
+    }
+
+    function renderLobby() {
+      api('/capabilities/' + encodeURIComponent(session.room_id) + '/agents')
+        .then(function (data) {
+          var agents = Array.isArray(data.agents) ? data.agents : [];
+          $('room-sub').textContent =
+            agents.length + ' agent · diperbarui ' + timeAgo(data.updated_at);
+
+          if (!agents.length) {
+            setBody('<div class="empty-state">Belum ada agent di room ini.</div>');
+            say('Lobby kosong.');
+            return;
+          }
+
+          var online = agents.filter(function (a) { return a.presence === 'online'; }).length;
+          var html = '<p class="section-label">' + online + ' dari ' + agents.length +
+                     ' agent sedang online</p>';
+
+          html += agents.map(function (a) {
+            var load = a.current_load == null ? 0 : a.current_load;
+            var max = a.max_concurrent_tasks;
+            var loadText = max == null ? (load + ' tugas') : (load + ' / ' + max + ' tugas');
+            var skillCount = Array.isArray(a.skills) ? a.skills.length : 0;
+            return '' +
+              '<button class="card" type="button" data-agent="' + esc(a.agent_id) + '"' +
+                ' aria-label="Lihat detail agent ' + esc(a.display_name || a.agent_id) + '">' +
+                '<div class="card-head">' +
+                  '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
+                  '<span>' +
+                    '<span class="badge ' + (a.presence === 'online' ? 'online' : 'offline') + '">' +
+                      esc(a.presence || 'offline') + '</span> ' +
+                    '<span class="badge ' + availabilityClass(a.availability) + '">' +
+                      esc(a.availability || '—') + '</span>' +
+                  '</span>' +
+                '</div>' +
+                '<div class="card-meta">' +
+                  '<span class="mono">' + esc(a.agent_id) + '</span>' +
+                  '<span>🧠 ' + skillCount + ' skill</span>' +
+                  '<span>📊 ' + esc(loadText) + '</span>' +
+                  '<span>👁 ' + esc(timeAgo(a.last_seen_at)) + '</span>' +
+                '</div>' +
+              '</button>';
+          }).join('');
+
+          setBody(html);
+          say('Lobby: ' + agents.length + ' agent, ' + online + ' online.');
+        })
+        .catch(onLoadError);
+    }
+
+    // ── Detail agent ─────────────────────────────────────────────────────────
+    function renderAgentDetail(agentId) {
+      api('/capabilities/' + encodeURIComponent(session.room_id) +
+          '/agents/' + encodeURIComponent(agentId))
+        .then(function (data) {
+          var a = data.agent;
+          if (!a) { setBody('<div class="empty-state">Agent tidak ditemukan.</div>'); return; }
+
+          var html = '<div class="backlink"><button type="button" data-back="lobby">← Kembali ke lobby</button></div>';
+          html += '<div class="panel">';
+          html += '<div class="card-head">' +
+                    '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
+                    '<span>' +
+                      '<span class="badge ' + (a.presence === 'online' ? 'online' : 'offline') + '">' +
+                        esc(a.presence || 'offline') + '</span> ' +
+                      '<span class="badge ' + availabilityClass(a.availability) + '">' +
+                        esc(a.availability || '—') + '</span>' +
+                    '</span>' +
+                  '</div>';
+
+          if (a.summary) html += '<p class="hint">' + esc(a.summary) + '</p>';
+
+          html += '<dl class="kv">' +
+            '<dt>Agent ID</dt><dd class="mono">' + esc(a.agent_id) + '</dd>' +
+            '<dt>Identitas stabil</dt><dd class="mono">' + esc(a.stable_agent_identity_id || '—') + '</dd>' +
+            '<dt>Beban kerja</dt><dd>' + esc(a.current_load == null ? 0 : a.current_load) +
+              (a.max_concurrent_tasks == null ? ' (tanpa batas)' : ' dari ' + esc(a.max_concurrent_tasks)) + '</dd>' +
+            '<dt>Bergabung</dt><dd>' + esc(fmtDate(a.joined_at)) + '</dd>' +
+            '<dt>Terakhir terlihat</dt><dd>' + esc(fmtDate(a.last_seen_at)) + ' (' + esc(timeAgo(a.last_seen_at)) + ')</dd>' +
+            '<dt>Verifikasi</dt><dd>' + esc(a.verification || '—') + '</dd>' +
+          '</dl>';
+
+          var tools = Array.isArray(a.tool_access) ? a.tool_access : [];
+          html += '<p class="section-label">Tool access (' + tools.length + ')</p>';
+          html += tools.length
+            ? tools.map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join('')
+            : '<p class="hint">Tidak ada yang dideklarasikan.</p>';
+
+          var cons = Array.isArray(a.constraints) ? a.constraints : [];
+          html += '<p class="section-label">Constraints (' + cons.length + ')</p>';
+          html += cons.length
+            ? cons.map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('')
+            : '<p class="hint">Tidak ada yang dideklarasikan.</p>';
+
+          html += '</div>';
+
+          var skills = Array.isArray(a.skills) ? a.skills : [];
+          html += '<p class="section-label">Skills (' + skills.length + ')</p>';
+          if (!skills.length) {
+            html += '<div class="empty-state">Agent ini belum mendaftarkan skill.</div>';
+          } else {
+            html += skills.map(function (s) {
+              var tags = Array.isArray(s.tags) ? s.tags : [];
+              var body = '<div class="card">' +
+                '<div class="card-head"><span class="card-title">' + esc(s.name || s.id) + '</span>' +
+                '<span class="mono">' + esc(s.id) + '</span></div>';
+              if (s.description) body += '<p class="hint">' + esc(s.description) + '</p>';
+              if (tags.length) {
+                body += '<div>' + tags.map(function (t) {
+                  return '<span class="chip">' + esc(t) + '</span>';
+                }).join('') + '</div>';
+              }
+              return body + '</div>';
+            }).join('');
+          }
+
+          setBody(html);
+          say('Detail agent ' + (a.display_name || a.agent_id) + '.');
+        })
+        .catch(onLoadError);
+    }
+
+    // ── Pekerjaan (tasks) ────────────────────────────────────────────────────
+    // Model task hanya punya siklus penerimaan (ditawarkan → diterima/ditolak/
+    // ditunda). Tidak ada status "selesai", jadi progres ditampilkan sebagai
+    // tahap siklus, bukan persentase penyelesaian yang tidak punya data.
+    var STATUS_LABEL = {
+      waiting_for_acceptance: 'Menunggu jawaban',
+      accepted: 'Diterima',
+      rejected: 'Ditolak',
+      deferred: 'Ditunda'
+    };
+    var STATUS_CLASS = {
+      waiting_for_acceptance: 'waiting',
+      accepted: 'accepted',
+      rejected: 'rejected',
+      deferred: 'deferred'
+    };
+
+    function statusBadge(status) {
+      return '<span class="badge ' + (STATUS_CLASS[status] || 'waiting') + '">' +
+             esc(STATUS_LABEL[status] || status || '—') + '</span>';
+    }
+
+    function priorityBadge(p) {
+      var cls = p === 'high' ? 'high' : (p === 'low' ? 'low' : 'normal');
+      return '<span class="badge ' + cls + '">' + esc(p || 'normal') + '</span>';
+    }
+
+    function progressBar(tasks) {
+      var total = tasks.length;
+      if (!total) return '';
+      var counts = { accepted: 0, waiting_for_acceptance: 0, deferred: 0, rejected: 0 };
+      tasks.forEach(function (t) {
+        if (counts[t.status] != null) counts[t.status]++;
+      });
+      var order = ['accepted', 'waiting_for_acceptance', 'deferred', 'rejected'];
+      return '<div class="progress-row">' + order.map(function (key) {
+        var n = counts[key];
+        var pct = Math.round((n / total) * 100);
+        return '<div class="progress-seg">' +
+          '<div class="bar"><span class="' + STATUS_CLASS[key] + '" style="width:' + pct + '%"></span></div>' +
+          '<div class="cap"><span>' + esc(STATUS_LABEL[key]) + '</span><span>' + n + ' · ' + pct + '%</span></div>' +
+        '</div>';
+      }).join('') + '</div>';
+    }
+
+    function stageTrack(status) {
+      var mid, last;
+      if (status === 'accepted') {
+        mid = '<span class="step done">Diterima</span>';
+        last = '<span class="step current">Dikerjakan</span>';
+      } else if (status === 'rejected') {
+        mid = '<span class="step failed">Ditolak</span>';
+        last = '<span class="step">Dikerjakan</span>';
+      } else if (status === 'deferred') {
+        mid = '<span class="step current">Ditunda</span>';
+        last = '<span class="step">Dikerjakan</span>';
+      } else {
+        mid = '<span class="step current">Menunggu jawaban</span>';
+        last = '<span class="step">Dikerjakan</span>';
+      }
+      return '<div class="stage">' +
+             '<span class="step done">Ditawarkan</span><span class="arrow">→</span>' +
+             mid + '<span class="arrow">→</span>' + last +
+             '</div>';
+    }
+
+    function renderTasks() {
+      api('/tasks/' + encodeURIComponent(session.room_id))
+        .then(function (data) {
+          var tasks = Array.isArray(data.tasks) ? data.tasks : [];
+          if (!tasks.length) {
+            setBody('<div class="empty-state">Belum ada pekerjaan yang didelegasikan di room ini.</div>');
+            say('Tidak ada pekerjaan.');
+            return;
+          }
+
+          var html = '<p class="section-label">Rincian pekerjaan (' + tasks.length + ')</p>';
+          html += progressBar(tasks);
+          html += '<p class="hint" style="margin:12px 0 16px">' +
+                  'Progres di atas adalah tahap penerimaan delegasi. Relay belum merekam ' +
+                  'status penyelesaian, jadi tidak ada persentase "selesai".</p>';
+
+          html += tasks.map(function (t) {
+            return '' +
+              '<button class="card" type="button" data-task="' + esc(t.task_id) + '"' +
+                ' aria-label="Lihat detail pekerjaan ' + esc(t.title || t.task_id) + '">' +
+                '<div class="card-head">' +
+                  '<span class="card-title">' + esc(t.title || t.task_id) + '</span>' +
+                  '<span>' + statusBadge(t.status) + ' ' + priorityBadge(t.priority) + '</span>' +
+                '</div>' +
+                '<div class="card-meta">' +
+                  '<span>👤 ' + esc(t.delegated_by || '—') + ' → ' + esc(t.responsible_agent_id || t.offered_to_agent_id || '—') + '</span>' +
+                  '<span>⏱ ' + esc(timeAgo(t.updated_at)) + '</span>' +
+                '</div>' +
+              '</button>';
+          }).join('');
+
+          setBody(html);
+          say(tasks.length + ' pekerjaan dimuat.');
+        })
+        .catch(onLoadError);
+    }
+
+    function renderTaskDetail(taskId) {
+      api('/tasks/' + encodeURIComponent(session.room_id) + '/' + encodeURIComponent(taskId))
+        .then(function (data) {
+          var t = data.task;
+          if (!t) { setBody('<div class="empty-state">Pekerjaan tidak ditemukan.</div>'); return; }
+
+          var html = '<div class="backlink"><button type="button" data-back="tasks">← Kembali ke daftar pekerjaan</button></div>';
+          html += '<div class="panel">';
+          html += '<div class="card-head">' +
+                    '<span class="card-title">' + esc(t.title || t.task_id) + '</span>' +
+                    '<span>' + statusBadge(t.status) + ' ' + priorityBadge(t.priority) + '</span>' +
+                  '</div>';
+          html += stageTrack(t.status);
+
+          html += '<dl class="kv">' +
+            '<dt>Task ID</dt><dd class="mono">' + esc(t.task_id) + '</dd>' +
+            '<dt>Didelegasikan oleh</dt><dd>' + esc(t.delegated_by || '—') + '</dd>' +
+            '<dt>Ditawarkan ke</dt><dd>' + esc(t.offered_to_agent_id || '—') + '</dd>' +
+            '<dt>Penanggung jawab</dt><dd>' + esc(t.responsible_agent_id || 'belum ada') + '</dd>' +
+            '<dt>Kontak</dt><dd>' + esc(t.point_of_contact_agent_id || '—') + '</dd>' +
+            '<dt>Dibuat</dt><dd>' + esc(fmtDate(t.created_at)) + '</dd>' +
+            '<dt>Diperbarui</dt><dd>' + esc(fmtDate(t.updated_at)) + ' (' + esc(timeAgo(t.updated_at)) + ')</dd>' +
+            '<dt>Alasan jawaban</dt><dd>' + esc(t.response_reason || '—') + '</dd>' +
+            '<dt>Ditunda sampai</dt><dd>' + esc(t.deferred_until ? fmtDate(t.deferred_until) : '—') + '</dd>' +
+            '<dt>Lease sampai</dt><dd>' + esc(t.lease_until ? fmtDate(t.lease_until) : '—') + '</dd>' +
+          '</dl>';
+
+          var watchers = Array.isArray(t.watcher_ids) ? t.watcher_ids : [];
+          html += '<p class="section-label">Watcher (' + watchers.length + ')</p>';
+          html += watchers.length
+            ? watchers.map(function (w) { return '<span class="chip">' + esc(w) + '</span>'; }).join('')
+            : '<p class="hint">Tidak ada.</p>';
+
+          html += '</div>';
+          setBody(html);
+          say('Detail pekerjaan ' + (t.title || t.task_id) + '.');
+        })
+        .catch(onLoadError);
+    }
+
+    // ── Skills ───────────────────────────────────────────────────────────────
+    function renderSkills() {
+      api('/capabilities/' + encodeURIComponent(session.room_id) + '/skills')
+        .then(function (data) {
+          var skills = Array.isArray(data.skills) ? data.skills : [];
+          if (!skills.length) {
+            setBody('<div class="empty-state">Belum ada skill yang didaftarkan di room ini.</div>');
+            say('Tidak ada skill.');
+            return;
+          }
+
+          var html = '<p class="section-label">Skill tersedia (' + skills.length + ')</p>';
+          html += skills.map(function (s) {
+            var agents = Array.isArray(s.agents) ? s.agents : [];
+            var body = '<div class="card">' +
+              '<div class="card-head">' +
+                '<span class="card-title">' + esc(s.name || s.skill_id) + '</span>' +
+                '<span class="mono">' + esc(s.skill_id) + '</span>' +
+              '</div>';
+            if (s.description) body += '<p class="hint">' + esc(s.description) + '</p>';
+            body += '<div class="card-meta"><span>👥 ' + (s.agent_count || agents.length) + ' agent</span></div>';
+            if (agents.length) {
+              body += '<div style="margin-top:10px">' + agents.map(function (a) {
+                return '<span class="chip">' + esc(a.display_name || a.agent_id) +
+                       ' · ' + esc(a.presence) + '</span>';
+              }).join('') + '</div>';
+            }
+            return body + '</div>';
+          }).join('');
+
+          setBody(html);
+          say(skills.length + ' skill dimuat.');
+        })
+        .catch(onLoadError);
+    }
+
+    // ── Polling ──────────────────────────────────────────────────────────────
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(function () {
+        if (session && !document.hidden) renderActiveTab();
+      }, 20000);
+    }
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    // ── Events ───────────────────────────────────────────────────────────────
+    $('gate-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var roomId = $('input-room').value.trim().toUpperCase();
+      var token = $('input-token').value;
+      if (!/^[A-Z0-9]{6}$/.test(roomId)) {
+        showGateError('Room ID harus 6 karakter huruf atau angka.');
+        return;
+      }
+      if (!token) { showGateError('Kunci room wajib diisi.'); return; }
+
+      var btn = $('gate-submit');
+      btn.disabled = true;
+      btn.textContent = 'Memeriksa...';
+      showGateError('');
+
+      enterRoom(roomId, token)
+        .catch(function (err) { showGateError(err.message); })
+        .then(function () {
+          btn.disabled = false;
+          btn.textContent = 'Masuk';
+        });
+    });
+
+    $('btn-leave').addEventListener('click', leaveRoom);
+    $('btn-refresh').addEventListener('click', function () { renderActiveTab(); });
+
+    ['lobby', 'tasks', 'skills'].forEach(function (name) {
+      $('tab-' + name).addEventListener('click', function () { setTab(name); });
+    });
+
+    // Delegasi klik untuk kartu yang dirender ulang terus-menerus.
+    $('tab-content').addEventListener('click', function (ev) {
+      var agentBtn = ev.target.closest('[data-agent]');
+      if (agentBtn) { detail = { kind: 'agent', id: agentBtn.getAttribute('data-agent') }; renderActiveTab(); return; }
+
+      var taskBtn = ev.target.closest('[data-task]');
+      if (taskBtn) { detail = { kind: 'task', id: taskBtn.getAttribute('data-task') }; renderActiveTab(); return; }
+
+      var back = ev.target.closest('[data-back]');
+      if (back) { detail = null; renderActiveTab(); }
+    });
+
+    // ── Bootstrap ────────────────────────────────────────────────────────────
+    loadStats();
+    session = loadSession();
+    if (session) {
+      // Validasi ulang kunci yang tersimpan; kalau sudah dicabut, balik ke form.
+      api('/capabilities/' + encodeURIComponent(session.room_id) + '/agents')
+        .then(function () { renderRoom(); })
+        .catch(function () { leaveRoom(); });
+    }
+  })();
+  </script>
+</body>
+</html>

@@ -6,9 +6,11 @@ Define a minimal token rotation model for private `ssyubix` rooms so the room
 owner can recover from leaked room access credentials without rebuilding the
 whole room.
 
+Every `ssyubix` room is private and requires a join token, so this design applies
+to every room on the relay.
+
 This design is intentionally narrow:
 
-- it applies only to private rooms
 - rotation is an owner-level action
 - it complements the room banlist instead of replacing it
 - it favors predictable, low-cost relay behavior over complex secret workflows
@@ -48,7 +50,7 @@ chat path.
 
 That means:
 
-1. only private rooms have join-token rotation
+1. every room has a join token, so every room can be rotated
 2. the owner is the only actor allowed to rotate the token in v1
 3. rotation creates a new active token and retires the old one
 4. the relay enforces the active token on future joins
@@ -74,13 +76,12 @@ revoking the bad actor is not enough if the credential itself may have escaped.
 
 ## Scope
 
-This design applies only to:
+This design applies to:
 
-- private rooms that already require a token to join
+- every room, since all rooms require a token to join
 
 It does not apply to:
 
-- public rooms
 - per-message secrets
 - Cloudflare API tokens or external connector credentials
 
@@ -202,7 +203,7 @@ After rotation, the new token should be treated as sensitive room metadata.
 
 That means:
 
-- do not expose it in public room listings
+- do not expose it in the aggregate activity stats served at `GET /rooms`
 - do not leak it to unauthorized agents
 - avoid logging it in raw telemetry or prompts
 - only surface it where current private-room join/auth workflows already expect
@@ -235,16 +236,8 @@ If the room already banned a bad identity:
 - ban should remain in force
 - token rotation should still happen if the secret itself may have spread
 
-### Public Rooms
-
-Public rooms should not use this mechanism.
-
-If a room needs rotation semantics for access control, that is a signal that it
-should probably be private.
-
 ## Acceptance Criteria
 
-- only private rooms have token rotation
 - token rotation is owner-only in v1
 - a new active token replaces the old token
 - the old token, if retained at all, expires after a short grace window

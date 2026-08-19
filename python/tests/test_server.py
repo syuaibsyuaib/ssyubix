@@ -1161,5 +1161,39 @@ class ToolDefinitionMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reason", tools["task_accept"].inputSchema["properties"])
 
 
+class PrivateOnlyRoomTests(unittest.IsolatedAsyncioTestCase):
+    async def test_room_discovery_tool_is_not_exposed(self):
+        tools = {tool.name for tool in await server.mcp.list_tools()}
+
+        # Semua room private: tidak ada permukaan untuk menemukan room tanpa token.
+        self.assertNotIn("room_list", tools)
+        self.assertIn("room_join", tools)
+
+    async def test_room_create_no_longer_accepts_a_privacy_toggle(self):
+        tools = {tool.name: tool for tool in await server.mcp.list_tools()}
+        schema = tools["room_create"].inputSchema
+
+        self.assertNotIn("is_private", json.dumps(schema))
+
+    async def test_room_join_requires_a_token(self):
+        tools = {tool.name: tool for tool in await server.mcp.list_tools()}
+        self.assertIn("token", json.dumps(tools["room_join"].inputSchema))
+
+        with self.assertRaises(Exception):
+            server.JoinRoomInput(room_id="ABC123")
+        with self.assertRaises(Exception):
+            server.JoinRoomInput(room_id="ABC123", token="")
+
+        joined = server.JoinRoomInput(room_id="ABC123", token="SECRET123")
+        self.assertEqual(joined.token, "SECRET123")
+
+    def test_create_room_input_rejects_is_private(self):
+        with self.assertRaises(Exception):
+            server.CreateRoomInput(name="demo", is_private=False)
+
+        room = server.CreateRoomInput(name="demo")
+        self.assertEqual(room.name, "demo")
+
+
 if __name__ == "__main__":
     unittest.main()

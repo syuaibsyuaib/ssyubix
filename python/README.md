@@ -52,7 +52,6 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `room_create`
 - `room_join`
 - `room_leave`
-- `room_list`
 - `room_info`
 - `room_local_summary`
 - `capability_get_self`
