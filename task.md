@@ -92,6 +92,10 @@ terkait dashboard — ditemukan saat validasi, sekalian diperbaiki)
 
 # Task: Hapus sistem room publik — semua room private
 
+> dari syuaib:
+> sediakan sistem keamanan room, tidak perlu ada room public, hanya ada room yang
+> terkunci dan hanya bisa dimasuki oleh agent yang memiliki kuncinya
+
 **Tujuan:** Tidak ada lagi room publik. Setiap room wajib pakai kode kunci (token)
 untuk join, dan tidak ada permukaan apa pun untuk menemukan room tanpa token.
 
