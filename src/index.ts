@@ -5,6 +5,7 @@
  * Endpoints:
  *   GET  /                        → halaman dashboard (Static Assets)
  *   GET  /info                    → info server
+ *   POST /admin/prune-rooms       → buang room warisan mode publik (butuh REGISTRY_ADMIN_TOKEN)
  *   GET  /rooms                   → statistik aktivitas agregat (tanpa ID/nama room)
  *   WS   /connect/:room_id        → join room (query: ?name=&token=, token wajib)
  *   POST /rooms                   → buat room baru (body: {name})
@@ -40,7 +41,7 @@ import {
   type AgentPresenceSnapshot,
   type StoredRoomSession,
 } from "./presence";
-import { summarizeRoomActivity, type StoredRoomMeta } from "./room-meta";
+import { isUnjoinableRoom, summarizeRoomActivity, type StoredRoomMeta } from "./room-meta";
 import {
   grantRoomAdmin,
   normalizeRoomRoleState,
@@ -68,6 +69,11 @@ import {
 export interface Env {
   AGENTLINK_ROOM: DurableObjectNamespace;
   AGENTLINK_REGISTRY: DurableObjectNamespace;
+  /**
+   * Secret opsional untuk endpoint pemeliharaan `/admin/*`.
+   * Bila tidak diset, endpoint admin dimatikan sepenuhnya.
+   */
+  REGISTRY_ADMIN_TOKEN?: string;
 }
 
 interface RoomMeta extends StoredRoomMeta {
@@ -194,6 +200,39 @@ export default {
           task_get: "GET /tasks/:room_id/:task_id?token=<token>",
         },
       }, { headers: corsHeaders });
+    }
+
+    // ── POST /admin/prune-rooms ── buang room warisan mode publik.
+    // Mati total bila REGISTRY_ADMIN_TOKEN tidak diset, dan dry-run kecuali
+    // confirm=true. Yang bisa dihapus hanya room yang memang sudah ditolak
+    // registry, jadi tidak ada room hidup yang bisa jadi korban.
+    if (path === "/admin/prune-rooms" && request.method === "POST") {
+      const adminToken = env.REGISTRY_ADMIN_TOKEN;
+      if (!adminToken) {
+        return Response.json({
+          success: false,
+          error: "Endpoint admin tidak aktif: REGISTRY_ADMIN_TOKEN belum diset.",
+        }, { status: 404, headers: corsHeaders });
+      }
+      if (!timingSafeEqual(request.headers.get("X-Admin-Token") || "", adminToken)) {
+        return Response.json(
+          { success: false, error: "Unauthorized." },
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const registry = env.AGENTLINK_REGISTRY.get(
+        env.AGENTLINK_REGISTRY.idFromName("global"),
+      );
+      const confirm = url.searchParams.get("confirm") === "true";
+      const resp = await registry.fetch(new Request(
+        `http://internal/prune-unjoinable?confirm=${confirm}`,
+        { method: "POST" },
+      ));
+      return new Response(await resp.text(), {
+        status: resp.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ── GET /rooms ── statistik agregat; tidak pernah membocorkan ID/nama room
@@ -1820,6 +1859,43 @@ export class AgentLinkRegistry extends DurableObject {
       return Response.json(summarizeRoomActivity(all.values()));
     }
 
+    // Buang room warisan mode publik yang sudah tidak bisa dimasuki siapa pun.
+    // Default dry-run: menghapus hanya terjadi bila confirm=true dikirim.
+    if (action === "prune-unjoinable" && request.method === "POST") {
+      const confirm = url.searchParams.get("confirm") === "true";
+      const all = await this.ctx.storage.list<RoomMeta>({ prefix: "room:" });
+
+      const doomed: { key: string; room_id: string; created_at: string }[] = [];
+      for (const [key, room] of all) {
+        if (isUnjoinableRoom(room)) {
+          doomed.push({ key, room_id: room.room_id, created_at: room.created_at });
+        }
+      }
+
+      let deleted = 0;
+      if (confirm) {
+        // storage.delete menerima maksimal 128 key per panggilan.
+        for (let i = 0; i < doomed.length; i += 128) {
+          const chunk = doomed.slice(i, i + 128).map((entry) => entry.key);
+          deleted += await this.ctx.storage.delete(chunk);
+        }
+      }
+
+      return Response.json({
+        ok: true,
+        dry_run: !confirm,
+        total_rooms_before: all.size,
+        unjoinable_found: doomed.length,
+        joinable_kept: all.size - doomed.length,
+        deleted,
+        // Contoh saja, dan hanya room mati — tidak ada token di bentuk ini.
+        sample: doomed.slice(0, 10).map((entry) => ({
+          room_id: entry.room_id,
+          created_at: entry.created_at,
+        })),
+      });
+    }
+
     // Register room baru
     if (action === "register" && request.method === "POST") {
       const data = await request.json() as RoomMeta;
@@ -1949,6 +2025,21 @@ export class AgentLinkRegistry extends DurableObject {
  */
 function readRoomToken(request: Request, url: URL): string {
   return request.headers.get("X-Room-Token") || url.searchParams.get("token") || "";
+}
+
+/**
+ * Perbandingan yang waktunya tidak bergantung pada posisi karakter pertama yang
+ * berbeda, supaya secret admin tidak bisa ditebak bertahap lewat pengukuran waktu.
+ */
+function timingSafeEqual(provided: string, expected: string): boolean {
+  if (provided.length !== expected.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < provided.length; i++) {
+    diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 function generateId(len: number): string {

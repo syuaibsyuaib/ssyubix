@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isUnjoinableRoom,
   ROOM_ACTIVITY_WINDOW_DAYS,
   summarizeRoomActivity,
   type StoredRoomMeta,
@@ -73,4 +74,38 @@ test("summarizeRoomActivity returns zeroes for an empty registry", () => {
   assert.equal(stats.active_room_count, 0);
   assert.equal(stats.total_room_count, 0);
   assert.equal(stats.total_agent_count, 0);
+});
+
+test("isUnjoinableRoom flags only rooms with no verifiable join key", () => {
+  // Warisan mode publik: tidak ada kunci, registry menolaknya.
+  assert.equal(isUnjoinableRoom({ token: "" }), true);
+  assert.equal(isUnjoinableRoom({ token: undefined as unknown as string }), true);
+  assert.equal(isUnjoinableRoom({ token: null as unknown as string }), true);
+
+  // Room hidup harus selamat, termasuk token yang bentuknya tidak lazim.
+  assert.equal(isUnjoinableRoom({ token: "TOPSECRET" }), false);
+  assert.equal(isUnjoinableRoom({ token: "0" }), false);
+  assert.equal(isUnjoinableRoom({ token: " " }), false);
+});
+
+test("isUnjoinableRoom ignores age, name, and ownership", () => {
+  const ancientButJoinable: StoredRoomMeta = {
+    room_id: "OLD001",
+    name: "",
+    token: "STILLVALID",
+    created_at: "2020-01-01T00:00:00.000Z",
+    owner_stable_identity_id: undefined,
+  };
+  const freshButDead: StoredRoomMeta = {
+    room_id: "NEW001",
+    name: "baru tapi tanpa kunci",
+    token: "",
+    created_at: NOW.toISOString(),
+    owner_stable_identity_id: "stable_owner",
+  };
+
+  // Umur tidak boleh jadi alasan menghapus: room lama yang masih punya kunci
+  // tetap bisa dimasuki pemiliknya.
+  assert.equal(isUnjoinableRoom(ancientButJoinable), false);
+  assert.equal(isUnjoinableRoom(freshButDead), true);
 });
