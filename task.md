@@ -153,7 +153,7 @@ untuk join, dan tidak ada permukaan apa pun untuk menemukan room tanpa token.
   Konsekuensinya: room publik yang sudah ada **tidak bisa dimasuki lagi** — pengguna harus
   membuat room baru. Ini konsekuensi langsung dari "hapus sistem room publik".
 - **Breaking change untuk client lama:** `room_join` tanpa token dan `room_create` dengan
-  `is_private` akan error. Perlu rilis versi baru paket `ssyubix` (sekarang `2.3.1`).
+  `is_private` akan error. Sudah di-bump ke **3.0.0** (major, sesuai SemVer).
 
 ---
 
