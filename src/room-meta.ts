@@ -5,6 +5,8 @@ export interface StoredRoomMeta {
   created_at: string;
   owner_stable_identity_id?: string;
   admin_stable_identity_ids?: string[];
+  /** Kuasa per admin; lihat `room-roles.ts`. Room lama tidak punya field ini. */
+  admin_powers?: Record<string, string[]>;
   agent_count?: number;
 }
 

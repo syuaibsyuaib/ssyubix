@@ -1456,9 +1456,24 @@ class JoinRoomInput(BaseModel):
     token:   str = Field(..., description="Room key supplied by the room owner", min_length=1)
 
 
+ROOM_POWER_VALUES = ("grant_admin", "revoke_admin")
+
+
 class RoomAdminMutationInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     target_agent_id: str = Field(..., min_length=1, description="Agent ID of a target currently active in the room")
+
+
+class RoomAdminGrantInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    target_agent_id: str = Field(..., min_length=1, description="Agent ID of a target currently active in the room")
+    powers: Optional[list[Literal["grant_admin", "revoke_admin"]]] = Field(
+        default=None,
+        description=(
+            "Powers to hand over. Omit to pass on everything you hold. "
+            "You can never grant a power you do not have yourself."
+        ),
+    )
 
 class SendInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -2196,19 +2211,29 @@ async def room_info() -> str:
 
 
 @mcp.tool(name="room_admin_add")
-async def room_admin_add(params: RoomAdminMutationInput) -> str:
+async def room_admin_add(params: RoomAdminGrantInput) -> str:
     """
-    Grant room-admin role to another agent currently active in the room.
+    Grant room-admin to another agent in the room, with all or part of your powers.
 
-    Only the room owner can call this. Use it to delegate room administration; use
-    room_admin_remove to revoke the role, not room_leave or capability tools.
+    Requires the grant_admin power, which the owner always holds and can pass on.
+    Omit params.powers to hand over everything you hold; name a subset to delegate
+    narrowly. You can never grant a power you do not have yourself, so this cannot
+    be used to escalate. Use room_admin_remove to take the role back.
+
+    Powers are per-agent and stored on the room, so they survive reconnects. Note
+    that they follow the agent's stable identity: an agent that changes AGENT_NAME
+    becomes a different identity and loses what it was granted.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()
-        _, ack = await _await_ack({
+        payload: dict[str, Any] = {
             "type": "room_admin_add",
             "target_agent_id": params.target_agent_id,
-        })
+        }
+        # Kirim key-nya hanya bila diisi: "tidak disebut" berarti wariskan semua.
+        if params.powers is not None:
+            payload["powers"] = params.powers
+        _, ack = await _await_ack(payload)
         if ack is None:
             raise RuntimeError("Timed out waiting for the room_admin_add ACK.")
         _apply_room_role_ack(ack)
@@ -2235,10 +2260,12 @@ async def room_admin_add(params: RoomAdminMutationInput) -> str:
 )
 async def room_admin_remove(params: RoomAdminMutationInput) -> str:
     """
-    Revoke the room-admin role from another active agent in the room.
+    Revoke the room-admin role, and every power that came with it, from another agent.
 
-    Only the room owner can call this. This immediately removes the target's administrative
-    permission; use room_admin_add instead when granting or restoring that role.
+    Requires the revoke_admin power, which the owner always holds and can pass on. The
+    owner can never be revoked this way, so a room cannot be taken over by an admin.
+    Removal drops the target's powers entirely rather than leaving them dormant; use
+    room_admin_add to grant the role again, choosing powers afresh.
     """
     try:
         room_id, self_agent_id, self_stable_identity_id = _require_room_connection_context()

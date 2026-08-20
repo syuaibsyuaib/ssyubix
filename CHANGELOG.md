@@ -12,6 +12,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Changed
 
+- Room admin is now a set of delegable powers rather than a label. `room_admin_add` takes an optional `powers` list — omit it to pass on everything you hold, or name a subset to delegate narrowly — and anyone holding `grant_admin` can appoint further admins, not just the owner. Nobody can grant a power they do not hold themselves, the owner holds every power implicitly and cannot be revoked, and revoking an admin drops its powers rather than leaving them dormant. Admins carried over from older rooms hold no powers, matching what the label actually conferred before
+
 - Every message the relay and the Python MCP client emit is now English: validation and authorization errors, ACK timeouts, retry-queue notices, room welcome text, MCP tool parameter descriptions, and the `ssyubix://guides/readme-first` onboarding guide. Code comments stay in Indonesian
 
 - Room ownership is no longer shared by every agent on one machine. The stable agent identity was keyed only by the relay endpoint, so several MCP clients on the same device read one identity file and became one identity — and since the relay resolves ownership by that identity, all of them showed as `owner` of a room only one of them created. The identity is now also scoped by `AGENT_NAME`, which is what distinguishes the apps. Installs that never set `AGENT_NAME` keep their existing identity and path

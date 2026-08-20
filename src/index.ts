@@ -952,6 +952,9 @@ export class AgentLinkRoom extends DurableObject {
         actorStableIdentityId: agentState.stable_agent_identity_id,
         targetStableIdentityId: targetState.stable_agent_identity_id,
         action: msg.type === "room_admin_add" ? "grant" : "revoke",
+        // Hanya diteruskan bila klien benar-benar mengirimnya, supaya "tidak
+        // disebut" tetap berarti "wariskan semua kuasa pemberi".
+        ...("powers" in msg ? { powers: msg.powers } : {}),
       });
 
       if (!roleMutation.ok) {
@@ -1343,6 +1346,8 @@ export class AgentLinkRoom extends DurableObject {
     actorStableIdentityId?: string;
     targetStableIdentityId: string;
     action: "grant" | "revoke";
+    /** Tidak diisi = target mewarisi seluruh kuasa pemberi. */
+    powers?: unknown;
   }): Promise<{
     ok: boolean;
     changed: boolean;
@@ -1357,6 +1362,7 @@ export class AgentLinkRoom extends DurableObject {
           room_id: params.roomId,
           actor_stable_identity_id: params.actorStableIdentityId,
           target_stable_identity_id: params.targetStableIdentityId,
+          ...(params.powers === undefined ? {} : { powers: params.powers }),
         }),
       },
     ));
@@ -2039,15 +2045,13 @@ export class AgentLinkRegistry extends DurableObject {
     }
 
     if ((action === "grant-admin" || action === "revoke-admin") && request.method === "POST") {
-      const {
-        room_id,
-        actor_stable_identity_id,
-        target_stable_identity_id,
-      } = await request.json() as {
+      const body = await request.json() as {
         room_id?: string;
         actor_stable_identity_id?: string;
         target_stable_identity_id?: string;
+        powers?: unknown;
       };
+      const { room_id, actor_stable_identity_id, target_stable_identity_id } = body;
       const roomId = typeof room_id === "string" ? room_id : "";
       const room = await this.ctx.storage.get<RoomMeta>(`room:${roomId}`);
       if (!room) {
@@ -2061,6 +2065,9 @@ export class AgentLinkRegistry extends DurableObject {
         ? grantRoomAdmin(room, {
           actorStableIdentityId: actor_stable_identity_id,
           targetStableIdentityId: target_stable_identity_id,
+          // "powers" absen berarti wariskan seluruh kuasa pemberi, jadi key-nya
+          // hanya diteruskan bila memang dikirim.
+          ...("powers" in body ? { powers: body.powers } : {}),
         })
         : revokeRoomAdmin(room, {
           actorStableIdentityId: actor_stable_identity_id,
@@ -2084,6 +2091,7 @@ export class AgentLinkRegistry extends DurableObject {
           ...room,
           owner_stable_identity_id: mutation.role_state.owner_stable_identity_id,
           admin_stable_identity_ids: mutation.role_state.admin_stable_identity_ids,
+          admin_powers: mutation.role_state.admin_powers,
         };
         await this.ctx.storage.put(`room:${roomId}`, nextRoom);
       }
