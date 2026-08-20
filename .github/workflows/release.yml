@@ -50,5 +50,12 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      # PyPI menolak unggahan file yang sudah ada dengan 400, sehingga menjalankan
+      # ulang rilis untuk versi yang sama — atau memindahkan tag yang salah arah —
+      # membuat workflow gagal padahal paketnya sudah terbit dengan benar.
+      # skip-existing membuat langkah ini idempoten: yang belum ada diunggah, yang
+      # sudah ada dilewati.
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
