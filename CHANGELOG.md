@@ -14,6 +14,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Every message the relay and the Python MCP client emit is now English: validation and authorization errors, ACK timeouts, retry-queue notices, room welcome text, MCP tool parameter descriptions, and the `ssyubix://guides/readme-first` onboarding guide. Code comments stay in Indonesian
 
+- Room ownership is no longer shared by every agent on one machine. The stable agent identity was keyed only by the relay endpoint, so several MCP clients on the same device read one identity file and became one identity — and since the relay resolves ownership by that identity, all of them showed as `owner` of a room only one of them created. The identity is now also scoped by `AGENT_NAME`, which is what distinguishes the apps. Installs that never set `AGENT_NAME` keep their existing identity and path
+
 - Partial capability updates work again. `capability_upsert_self` documents that only supplied fields change and omitted ones are preserved, and `capability_set_availability` documents `current_load` as optional, but neither was possible: the relay's message handlers rebuilt the payload with every field named, so an omitted field arrived as `undefined` and was rejected as an invalid value rather than treated as absent
 
 ### Security

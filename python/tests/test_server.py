@@ -1195,6 +1195,59 @@ class PrivateOnlyRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(room.name, "demo")
 
 
+class StableIdentityScopeTests(unittest.TestCase):
+    """Identitas stabil harus memisahkan agent, bukan hanya perangkat.
+
+    Sebelumnya identitas hanya dikunci endpoint relay, jadi setiap app MCP di satu
+    mesin memakai identitas yang sama. Relay mencocokkan kepemilikan room lewat
+    identitas itu, sehingga semua agent tampak sebagai owner padahal hanya satu
+    yang membuat room.
+    """
+
+    def setUp(self):
+        self.original_dir = server.local_state_dir
+        self.original_name = os.environ.get("AGENT_NAME")
+        self.tempdir = tempfile.TemporaryDirectory()
+        server.local_state_dir = Path(self.tempdir.name)
+
+    def tearDown(self):
+        server.local_state_dir = self.original_dir
+        if self.original_name is None:
+            os.environ.pop("AGENT_NAME", None)
+        else:
+            os.environ["AGENT_NAME"] = self.original_name
+        self.tempdir.cleanup()
+
+    def test_named_agents_get_separate_identity_files(self):
+        os.environ["AGENT_NAME"] = "opencode-agent"
+        first = server._client_identity_path()
+        os.environ["AGENT_NAME"] = "antigravity-agent"
+        second = server._client_identity_path()
+
+        self.assertNotEqual(first, second)
+
+    def test_the_same_name_keeps_the_same_path_across_restarts(self):
+        os.environ["AGENT_NAME"] = "opencode-agent"
+        self.assertEqual(server._client_identity_path(), server._client_identity_path())
+
+    def test_unnamed_agents_keep_the_original_path(self):
+        # Pengguna yang tidak menyetel AGENT_NAME tidak boleh kehilangan identitas
+        # lamanya hanya karena upgrade.
+        os.environ.pop("AGENT_NAME", None)
+        path = server._client_identity_path()
+
+        self.assertEqual(path.name, "identity.json")
+        self.assertNotIn("agents", path.parts)
+
+    def test_name_is_slugified_for_filesystem_safety(self):
+        os.environ["AGENT_NAME"] = "agent/../../escape me"
+        path = server._client_identity_path()
+
+        self.assertNotIn("..", path.parts)
+        bucket = path.parent.name
+        self.assertTrue(all(ch.isalnum() or ch == "_" for ch in bucket), bucket)
+
+
 class DefaultRelayEndpointTests(unittest.TestCase):
     """Kunci nama host default.
 

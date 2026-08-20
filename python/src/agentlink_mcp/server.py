@@ -98,8 +98,29 @@ def _room_cache_dir() -> Path:
     return local_state_dir / "rooms" / _server_cache_key()
 
 
+def _agent_identity_bucket() -> Optional[str]:
+    """Pemisah identitas antar agent di satu perangkat.
+
+    Identitas stabil dulu hanya dikunci oleh endpoint relay, sehingga setiap app
+    MCP di mesin yang sama membaca berkas yang sama dan menjadi "orang" yang sama.
+    Akibatnya relay menganggap semuanya pemilik room — sebab kepemilikan dicocokkan
+    lewat identitas stabil — padahal hanya satu yang membuat room itu.
+
+    AGENT_NAME adalah pembeda yang tepat: pengguna menyetelnya per app, dan itu pula
+    yang membedakan agent di UI. Bila tidak disetel, jalur lama dipertahankan supaya
+    identitas pengguna lama tidak berubah saat upgrade.
+    """
+    raw = os.environ.get("AGENT_NAME", "").strip()
+    if not raw:
+        return None
+    slug = "".join(ch if ch.isalnum() else "_" for ch in raw)[:64]
+    return slug or None
+
+
 def _client_identity_path() -> Path:
-    return local_state_dir / "client" / _server_cache_key() / "identity.json"
+    base = local_state_dir / "client" / _server_cache_key()
+    bucket = _agent_identity_bucket()
+    return (base / "agents" / bucket / "identity.json") if bucket else (base / "identity.json")
 
 
 def _corrupt_cache_dir() -> Path:
