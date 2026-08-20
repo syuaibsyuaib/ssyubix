@@ -1195,5 +1195,45 @@ class PrivateOnlyRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(room.name, "demo")
 
 
+class DefaultRelayEndpointTests(unittest.TestCase):
+    """Kunci nama host default.
+
+    Worker pernah berganti nama dari `agentlink` ke `ssyubix` tanpa default di sini
+    ikut berubah, sehingga setiap install tanpa konfigurasi memanggil host yang sudah
+    tidak ada. Test ini menahan bentuk kesalahan yang sama supaya tidak terulang diam-diam.
+    """
+
+    def test_default_points_at_the_deployed_worker(self):
+        self.assertEqual(
+            server.DEFAULT_AGENTLINK_URL,
+            "https://ssyubix.syuaibsyuaib.workers.dev",
+        )
+
+    def test_default_does_not_use_the_retired_hostname(self):
+        self.assertNotIn("agentlink.syuaibsyuaib", server.DEFAULT_AGENTLINK_URL)
+
+    def test_default_is_a_bare_https_origin(self):
+        # Path atau slash di ujung akan merusak URL yang dibentuk lewat f-string.
+        self.assertTrue(server.DEFAULT_AGENTLINK_URL.startswith("https://"))
+        self.assertFalse(server.DEFAULT_AGENTLINK_URL.endswith("/"))
+        self.assertEqual(server.DEFAULT_AGENTLINK_URL.count("/"), 2)
+
+    def test_readme_documents_the_same_default(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        for name in ("README.md", "python/README.md"):
+            readme = repo_root / name
+            if not readme.exists():
+                continue
+            text = readme.read_text(encoding="utf-8")
+            self.assertIn(
+                server.DEFAULT_AGENTLINK_URL, text,
+                f"{name} tidak menyebut endpoint default yang benar",
+            )
+            self.assertNotIn(
+                "agentlink.syuaibsyuaib.workers.dev", text,
+                f"{name} masih menyebut hostname yang sudah pensiun",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

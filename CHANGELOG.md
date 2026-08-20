@@ -22,6 +22,16 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Room durable objects now report their active agent count to the registry, so `total_agent_count` in `GET /rooms` and on the dashboard reflects reality. The field existed on the stored room since the original dashboard but was never written, so the number was always zero. Reports carry an absolute count rather than a delta, ride the existing debounced checkpoint alarm rather than the join path, and are skipped entirely when the count has not changed
 
+## [3.0.1] - 2026-08-20
+
+### Fixed
+
+- Fixed the default relay endpoint, which still pointed at `agentlink.syuaibsyuaib.workers.dev`. The Worker was renamed to the `ssyubix` brand name in an earlier commit and the old hostname stopped resolving, so any install that did not set `AGENTLINK_URL` was calling a host that does not exist and got an opaque 404 back. Added tests that pin the default and keep both READMEs consistent with it
+- Corrected the endpoint documented in `README.md` and `python/README.md`, which named the retired hostname
+- Added the three MCP tools missing from the README tool lists: `room_local_summary`, `room_admin_add`, and `room_admin_remove`
+- Rewrote the use-case examples, which showed joining by room name and never mentioned the token, so they no longer describe a flow that cannot work
+- Documented the actual create-share-join flow, including that the join key is returned once and never appears in any listing
+
 ## [3.0.0] - 2026-08-19
 
 Every room is now private. Joining requires the room ID plus the join key its owner
