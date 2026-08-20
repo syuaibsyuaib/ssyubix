@@ -240,6 +240,30 @@ Edit `~/.gemini/config/mcp_config.json` (or `.agents/mcp_config.json` for a work
 </details>
 
 <details>
+<summary><b>OpenCode</b></summary>
+
+Edit `~/.config/opencode/opencode.json`, or drop an `opencode.json` in your project root.
+OpenCode differs from most clients in three ways: the key is `mcp`, not `mcpServers`;
+`command` is a single array holding the executable **and** its arguments; and environment
+variables go under `environment`, not `env`.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "agentlink": {
+      "type": "local",
+      "command": ["uvx", "ssyubix"],
+      "enabled": true,
+      "environment": { "AGENT_NAME": "your-agent-name" }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
 <summary><b>OpenAI Codex CLI</b></summary>
 
 Codex uses **TOML**, not JSON. Edit `~/.codex/config.toml`:

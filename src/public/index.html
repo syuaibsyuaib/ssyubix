@@ -453,10 +453,22 @@
       renderActiveTab();
     }
 
-    function setBody(html) { $('tab-content').innerHTML = html; }
+    // Menulis ulang innerHTML dengan isi yang sama tetap memicu repaint, dan itulah
+    // yang terlihat sebagai kedipan saat polling. Lewati kalau tidak ada yang berubah.
+    var lastBody = null;
+    function setBody(html) {
+      if (html === lastBody) return;
+      lastBody = html;
+      $('tab-content').innerHTML = html;
+    }
 
-    function renderActiveTab() {
-      setBody('<div class="loading">Loading&hellip;</div>');
+    /**
+     * quiet=true untuk penyegaran latar belakang: jangan kosongkan panel jadi
+     * "Loading…" hanya untuk mengisinya kembali sedetik kemudian. Placeholder itu
+     * umpan balik untuk aksi yang dipicu pengguna, bukan untuk timer.
+     */
+    function renderActiveTab(quiet) {
+      if (!quiet) setBody('<div class="loading">Loading&hellip;</div>');
       if (detail && detail.kind === 'agent') return renderAgentDetail(detail.id);
       if (detail && detail.kind === 'task') return renderTaskDetail(detail.id);
       if (activeTab === 'lobby') return renderLobby();
@@ -788,7 +800,7 @@
     function startPolling() {
       stopPolling();
       pollTimer = setInterval(function () {
-        if (session && !document.hidden) renderActiveTab();
+        if (session && !document.hidden) renderActiveTab(true);
       }, 20000);
     }
 
