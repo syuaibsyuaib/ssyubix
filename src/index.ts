@@ -1009,15 +1009,15 @@ export class AgentLinkRoom extends DurableObject {
     if (msg.type === "capability_upsert") {
       const timestamp = new Date().toISOString();
       const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
-      const validation = validateCapabilityProfilePatch({
-        summary: msg.summary,
-        version: msg.version,
-        tool_access: msg.tool_access,
-        constraints: msg.constraints,
-        max_concurrent_tasks: msg.max_concurrent_tasks,
-        current_load: msg.current_load,
-        skills: msg.skills,
-      });
+      const validation = validateCapabilityProfilePatch(pickProvided(msg, [
+        "summary",
+        "version",
+        "tool_access",
+        "constraints",
+        "max_concurrent_tasks",
+        "current_load",
+        "skills",
+      ]));
       if (!validation.ok || !validation.patch) {
         ws.send(JSON.stringify({
           type: "error",
@@ -1056,13 +1056,10 @@ export class AgentLinkRoom extends DurableObject {
     if (msg.type === "capability_set_availability") {
       const timestamp = new Date().toISOString();
       const requestId = typeof msg.request_id === "string" ? msg.request_id : undefined;
-      const validation = validateCapabilityProfilePatch({
-        availability: msg.availability,
-        current_load: msg.current_load,
-      }, {
-        allowAvailability: true,
-        availabilityOnly: true,
-      });
+      const validation = validateCapabilityProfilePatch(
+        pickProvided(msg, ["availability", "current_load"]),
+        { allowAvailability: true, availabilityOnly: true },
+      );
       if (!validation.ok || !validation.patch) {
         ws.send(JSON.stringify({
           type: "error",
@@ -2119,6 +2116,28 @@ export class AgentLinkRegistry extends DurableObject {
  */
 function readRoomToken(request: Request, url: URL): string {
   return request.headers.get("X-Room-Token") || url.searchParams.get("token") || "";
+}
+
+/**
+ * Salin hanya key yang benar-benar ada di pesan klien.
+ *
+ * Validator capability membedakan "tidak dikirim" dari "dikirim bernilai salah"
+ * lewat `"key" in input`. Menyusun objek yang menyebut semua key secara eksplisit
+ * membuat pembedaan itu runtuh: key yang tidak dikirim tetap ada dengan nilai
+ * undefined, lalu ditolak sebagai nilai tidak valid — sehingga patch parsial,
+ * yang justru perilaku utama tool ini, tidak pernah bisa lolos.
+ */
+function pickProvided(
+  source: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (key in source) {
+      picked[key] = source[key];
+    }
+  }
+  return picked;
 }
 
 /**

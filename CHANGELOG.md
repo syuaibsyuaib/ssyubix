@@ -14,6 +14,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - Every message the relay and the Python MCP client emit is now English: validation and authorization errors, ACK timeouts, retry-queue notices, room welcome text, MCP tool parameter descriptions, and the `ssyubix://guides/readme-first` onboarding guide. Code comments stay in Indonesian
 
+- Partial capability updates work again. `capability_upsert_self` documents that only supplied fields change and omitted ones are preserved, and `capability_set_availability` documents `current_load` as optional, but neither was possible: the relay's message handlers rebuilt the payload with every field named, so an omitted field arrived as `undefined` and was rejected as an invalid value rather than treated as absent
+
 ### Security
 
 - Room authentication no longer reveals whether a room ID exists. "Room not found" and "wrong token" previously returned different errors, which confirmed a room ID to anyone guessing without needing its token; both now return the same message. A missing token is still reported distinctly, since that check runs before the room is read and describes the request rather than any room

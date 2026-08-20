@@ -311,6 +311,40 @@ test("validateCapabilityProfilePatch rejects unsupported and invalid values", ()
   ]);
 });
 
+test("validateCapabilityProfilePatch treats a missing key as not supplied", () => {
+  // Partial updates are the documented behaviour of capability_upsert_self, and
+  // they only work while an absent key stays absent. The relay handler used to
+  // rebuild the payload with every key listed, so an omitted field arrived as
+  // undefined and was rejected as an invalid value.
+  const result = validateCapabilityProfilePatch({ summary: "only this" });
+
+  assert.equal(result.ok, true, result.errors.join(" "));
+  assert.deepEqual(Object.keys(result.patch ?? {}), ["summary"]);
+});
+
+test("validateCapabilityProfilePatch rejects a key that is present but undefined", () => {
+  // The inverse of the case above: an explicitly present key still has to be a
+  // valid value, so the fix cannot be to simply ignore undefined everywhere.
+  const result = validateCapabilityProfilePatch({
+    summary: "text",
+    current_load: undefined,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("current_load")));
+});
+
+test("validateCapabilityProfilePatch accepts availability on its own", () => {
+  // capability_set_availability documents current_load as optional.
+  const result = validateCapabilityProfilePatch(
+    { availability: "busy" },
+    { allowAvailability: true, availabilityOnly: true },
+  );
+
+  assert.equal(result.ok, true, result.errors.join(" "));
+  assert.deepEqual(result.patch, { availability: "busy" });
+});
+
 test("applyCapabilityProfilePatch updates mutable capability fields without losing identity", () => {
   const manifest = createCapabilityRegistryManifest(undefined, "2026-03-09T00:00:00.000Z");
   upsertCapabilityProfile(manifest, {
