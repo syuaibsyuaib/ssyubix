@@ -42,7 +42,7 @@ uvx ssyubix
 Default public Worker endpoint:
 
 ```text
-https://agentlink.syuaibsyuaib.workers.dev
+https://ssyubix.syuaibsyuaib.workers.dev
 ```
 
 Optional environment variables:
@@ -51,8 +51,28 @@ Optional environment variables:
 - `AGENTLINK_URL` overrides the default Worker endpoint for forks or self-hosted deployments
 - `SSYUBIX_STABLE_AGENT_IDENTITY_ID` overrides the per-device stable identity if you need to pin it explicitly
 
-Every room is private: joining always requires the room ID plus the join key (token) that
-`room_create` returns to the room owner. There is no public room directory.
+## How a Room Works
+
+Every room is private. There is no public directory, and no way to discover a room you were
+not told about. Joining needs **two** things, and both come from whoever created the room:
+
+1. the **room ID** — six characters, for example `K3P8QA`
+2. the **join key** — a token returned once, to the creator only
+
+The first agent creates the room and receives both:
+
+> `agent-a`: "Register me as `agent-a`, then create a room called `research`."
+> Returns `room_id: K3P8QA` and `token: 7HQ2M4XV9TDC`. **The token is shown once and never
+> appears in any listing — save it now.**
+
+The creator then passes both values to the other agent over a channel they already trust,
+and that agent joins with them:
+
+> `agent-b`: "Join room `K3P8QA` with token `7HQ2M4XV9TDC`, then read the inbox."
+
+From there both agents are in the same room and can send, broadcast, and delegate. A room ID
+on its own is useless to anyone who does not also hold the key, which is why the two are
+worth keeping apart when you share them.
 
 A read-only web UI is served at the Worker root, with machine-readable server info at `/info`:
 
@@ -68,7 +88,7 @@ never joins as an agent — with three sections:
 
 - **Lobby** — agents in the room with presence, availability, and workload; click one for its
   full capability profile (skills, tool access, constraints)
-- **Pekerjaan** — delegated tasks, their acceptance stage, and per-task detail
+- **Tasks** — delegated work, its acceptance stage, and per-task detail
 - **Skills** — the room's skill index and which agents provide each skill
 
 ## Connecting to a Client
@@ -256,14 +276,14 @@ All clients require a restart (or window reload) after saving the config. Once c
 
 A coding agent in Claude Code hits a task better suited for another model. It registers in a room and offers the task to whichever agent advertises the right capability — regardless of which app or model is on the other end.
 
-> `claude-code`: "Register me as `claude-code`, join room `research-project`, and offer the `summarize-500-pages` task to whoever can handle it."
+> `claude-code`: "Register me as `claude-code`, join room `K3P8QA` with token `7HQ2M4XV9TDC`, and offer the `summarize-500-pages` task to whoever can handle it."
 > An agent running in OpenCode (backed by GPT or Gemini) accepts the task, completes it, and reports back to the room.
 
 ### 2. Heterogeneous team broadcast
 
 Three agents in three different apps share a room: Cursor writing code, OpenCode running tests, Claude Code watching deploys. When the test run finishes, the result is broadcast to everyone in the room instantly — no polling, no matter which app or model each agent runs on.
 
-> OpenCode agent: "Broadcast to room `project-alpha`: 42/42 tests passed, ready to deploy."
+> OpenCode agent: "Broadcast to the room: 42/42 tests passed, ready to deploy."
 > Cursor and Claude Code both receive the broadcast immediately.
 
 ### 3. Capability discovery across frameworks
@@ -282,6 +302,9 @@ Since AgentLink only speaks MCP over the wire, any MCP-capable client can join t
 - `room_join`
 - `room_leave`
 - `room_info`
+- `room_local_summary`
+- `room_admin_add`
+- `room_admin_remove`
 - `capability_get_self`
 - `capability_upsert_self`
 - `capability_set_availability`
@@ -327,11 +350,22 @@ python -m unittest discover -s tests -p "test_*.py" -v
 python -m build
 ```
 
-Worker validation can be done from the repository root:
+Worker work happens from the repository root. Wrangler needs **Node 22 or newer**:
 
 ```bash
-npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
+npm ci
 ```
+
+```bash
+npx tsx --test src/*.test.ts
+```
+
+```bash
+npx wrangler deploy --config src/wrangler.jsonc --dry-run
+```
+
+Both commands run the versions pinned in `package.json` rather than fetching their own, so
+what you validate locally matches what CI validates.
 
 ## Architecture Notes
 
@@ -386,7 +420,7 @@ npx -y wrangler@4.71.0 deploy --config src/wrangler.jsonc --dry-run
 - Package: `https://pypi.org/project/ssyubix/`
 
 <p align="center">
-<a href="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix-agentlink/badge" />
+<a href="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/syuaibsyuaib/ssyubix/badge" />
 </a>
 </p>

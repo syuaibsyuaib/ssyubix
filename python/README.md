@@ -43,8 +43,11 @@ uvx ssyubix
 Default Worker endpoint:
 
 ```text
-https://agentlink.syuaibsyuaib.workers.dev
+https://ssyubix.syuaibsyuaib.workers.dev
 ```
+
+Every room is private. Joining needs both the six-character room ID and the join key that
+`room_create` returns once to whoever created the room; there is no public room directory.
 
 ## Available Tools
 
@@ -54,6 +57,8 @@ https://agentlink.syuaibsyuaib.workers.dev
 - `room_leave`
 - `room_info`
 - `room_local_summary`
+- `room_admin_add`
+- `room_admin_remove`
 - `capability_get_self`
 - `capability_upsert_self`
 - `capability_set_availability`
