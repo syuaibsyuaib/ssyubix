@@ -12,6 +12,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Changed
 
+- The lobby identifies agents by a slug derived from their name instead of showing a raw agent id. Agent names are not unique — several clients can share one `AGENT_NAME`, and the lobby then showed identical rows telling nobody apart — so colliding names get a short suffix taken from the agent id, while unique names stay clean. The real name sits muted beneath the slug, and the agent id remains available by opening the agent
+
 - Room admin is now a set of delegable powers rather than a label. `room_admin_add` takes an optional `powers` list — omit it to pass on everything you hold, or name a subset to delegate narrowly — and anyone holding `grant_admin` can appoint further admins, not just the owner. Nobody can grant a power they do not hold themselves, the owner holds every power implicitly and cannot be revoked, and revoking an admin drops its powers rather than leaving them dormant. Admins carried over from older rooms hold no powers, matching what the label actually conferred before
 
 - Every message the relay and the Python MCP client emit is now English: validation and authorization errors, ACK timeouts, retry-queue notices, room welcome text, MCP tool parameter descriptions, and the `ssyubix://guides/readme-first` onboarding guide. Code comments stay in Indonesian

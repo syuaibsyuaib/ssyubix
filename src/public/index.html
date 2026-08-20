@@ -113,6 +113,10 @@
       gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
     }
     .card-title { font-size: 16px; font-weight: 600; }
+    /* Nama asli agent, di bawah slug. Diredam supaya slug tetap yang dibaca duluan. */
+    .card-subtitle {
+      display: block; font-size: 13px; color: #71717a; margin-top: 2px;
+    }
     .card-meta {
       display: flex; gap: 16px; font-size: 13px; color: #a1a1aa; flex-wrap: wrap;
     }
@@ -455,6 +459,9 @@
 
     // Menulis ulang innerHTML dengan isi yang sama tetap memicu repaint, dan itulah
     // yang terlihat sebagai kedipan saat polling. Lewati kalau tidak ada yang berubah.
+    // Slug hasil render lobby terakhir, dipakai ulang agar judul detail cocok
+    // dengan kartu yang tadi diklik.
+    var agentSlugs = {};
     var lastBody = null;
     function setBody(html) {
       if (html === lastBody) return;
@@ -492,6 +499,38 @@
       return 'offline_av';
     }
 
+    /**
+     * Nama agent tidak dijamin unik — dua app bisa memakai AGENT_NAME yang sama,
+     * dan lobby lalu menampilkan dua baris identik yang hanya bisa dibedakan lewat
+     * ID mentah. Slug ini menyelesaikannya: nama yang unik tetap bersih, dan hanya
+     * yang bentrok mendapat potongan agent_id sebagai pembeda.
+     *
+     * Pembeda diambil dari agent_id, bukan nomor urut, supaya slug tidak berpindah
+     * hanya karena urutan daftar berubah.
+     */
+    function buildAgentSlugs(agents) {
+      function base(a) {
+        var s = String(a.display_name || a.agent_id || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+        return s || 'agent';
+      }
+      var counts = {};
+      agents.forEach(function (a) {
+        var b = base(a);
+        counts[b] = (counts[b] || 0) + 1;
+      });
+      var slugs = {};
+      agents.forEach(function (a) {
+        var b = base(a);
+        slugs[a.agent_id] = counts[b] > 1
+          ? b + '-' + String(a.agent_id || '').slice(0, 4).toLowerCase()
+          : b;
+      });
+      return slugs;
+    }
+
     function renderLobby() {
       api('/capabilities/' + encodeURIComponent(session.room_id) + '/agents')
         .then(function (data) {
@@ -506,6 +545,8 @@
           }
 
           var online = agents.filter(function (a) { return a.presence === 'online'; }).length;
+          var slugs = buildAgentSlugs(agents);
+          agentSlugs = slugs;
           var html = '<p class="section-label">' + online + ' of ' + agents.length +
                      ' agents online</p>';
 
@@ -518,9 +559,12 @@
             var skillCount = Array.isArray(a.skills) ? a.skills.length : 0;
             return '' +
               '<button class="card" type="button" data-agent="' + esc(a.agent_id) + '"' +
-                ' aria-label="View details for agent ' + esc(a.display_name || a.agent_id) + '">' +
+                ' aria-label="View details for agent ' + esc(slugs[a.agent_id]) + '">' +
                 '<div class="card-head">' +
-                  '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
+                  '<span>' +
+                    '<span class="card-title">' + esc(slugs[a.agent_id]) + '</span>' +
+                    '<span class="card-subtitle">' + esc(a.display_name || a.agent_id) + '</span>' +
+                  '</span>' +
                   '<span>' +
                     '<span class="badge ' + (a.presence === 'online' ? 'online' : 'offline') + '">' +
                       esc(a.presence || 'offline') + '</span> ' +
@@ -529,7 +573,6 @@
                   '</span>' +
                 '</div>' +
                 '<div class="card-meta">' +
-                  '<span class="mono">' + esc(a.agent_id) + '</span>' +
                   '<span>🧠 ' + skillCount + (skillCount === 1 ? ' skill' : ' skills') + '</span>' +
                   '<span>📊 ' + esc(loadText) + '</span>' +
                   '<span>👁 ' + esc(timeAgo(a.last_seen_at)) + '</span>' +
@@ -553,8 +596,12 @@
 
           var html = '<div class="backlink"><button type="button" data-back="lobby">← Back to lobby</button></div>';
           html += '<div class="panel">';
+          var slug = agentSlugs[a.agent_id] || a.display_name || a.agent_id;
           html += '<div class="card-head">' +
-                    '<span class="card-title">' + esc(a.display_name || a.agent_id) + '</span>' +
+                    '<span>' +
+                      '<span class="card-title">' + esc(slug) + '</span>' +
+                      '<span class="card-subtitle">' + esc(a.display_name || a.agent_id) + '</span>' +
+                    '</span>' +
                     '<span>' +
                       '<span class="badge ' + (a.presence === 'online' ? 'online' : 'offline') + '">' +
                         esc(a.presence || 'offline') + '</span> ' +
