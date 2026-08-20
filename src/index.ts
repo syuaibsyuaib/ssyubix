@@ -190,7 +190,7 @@ export default {
     if (path === "/info" && request.method === "GET") {
       return Response.json({
         name: "AgentLink",
-        version: "3.0.0",
+        version: "3.0.1",
         backend: "Cloudflare Workers + Durable Objects",
         endpoints: {
           dashboard: "GET /",

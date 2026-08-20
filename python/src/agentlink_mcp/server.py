@@ -33,7 +33,11 @@ from .onboarding import (
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-AGENTLINK_URL = os.environ.get("AGENTLINK_URL", "https://agentlink.syuaibsyuaib.workers.dev").rstrip("/")
+# Worker di-deploy dengan nama brand `ssyubix`, jadi hostname-nya mengikuti nama itu.
+# Host lama `agentlink.*` sudah tidak ada sejak Worker berganti nama; jangan dipakai lagi.
+DEFAULT_AGENTLINK_URL = "https://ssyubix.syuaibsyuaib.workers.dev"
+
+AGENTLINK_URL = os.environ.get("AGENTLINK_URL", DEFAULT_AGENTLINK_URL).rstrip("/")
 AGENT_NAME    = os.environ.get("AGENT_NAME", f"agent-{uuid.uuid4().hex[:6]}")
 WS_BASE       = AGENTLINK_URL.replace("https://", "wss://").replace("http://", "ws://")
 LOCAL_STATE_VERSION = 1
