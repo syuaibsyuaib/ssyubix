@@ -253,9 +253,186 @@ itu **selamat**, bukti room hidup tidak ikut terhapus.
   masih ada. Untuk membersihkannya perlu tiap room DO menghapus isinya sendiri.
 - Endpoint `/admin/prune-rooms` sengaja dibiarkan hidup (keputusan user), terkunci secret.
 
-## Belum dikerjakan
-- [ ] [PR #48](https://github.com/syuaibsyuaib/ssyubix/pull/48) (CI Node 22) belum di-merge — CI di `main` masih merah.
-- [ ] Commit prune (`d1d2254`) belum masuk `main`; production menjalankan kode branch.
-- [ ] **Bug `agent_count`** (pre-existing, sejak commit dashboard `11234c9`): field tidak
-      pernah ditulis ke registry, jadi `total_agent_count` selalu 0. Perlu keputusan:
-      hapus metriknya, atau isi datanya dari room DO saat join/leave.
+## Sudah selesai
+- [x] [PR #48](https://github.com/syuaibsyuaib/ssyubix/pull/48) (CI Node 22) — di-merge.
+- [x] Commit prune sudah masuk `main` lewat [PR #49](https://github.com/syuaibsyuaib/ssyubix/pull/49).
+- [x] **Bug `agent_count`** — diperbaiki, lihat bagian di bawah.
+
+---
+
+# Task: Rilis 3.0.1 — endpoint default menunjuk host mati
+
+**Ditemukan saat menilai apakah README benar-benar mengajari orang memakai AgentLink.**
+
+Commit `5c2f732` mengganti nama Worker dari nama produk (`agentlink`) ke nama brand
+(`ssyubix`). Hostname lama berhenti ada — Cloudflare error 1042 — tapi default di
+klien Python tidak ikut pindah. Akibatnya **setiap install tanpa `AGENTLINK_URL`
+memanggil host yang tidak ada**, dan errornya (`404` + keluhan mimetype JSON) sama
+sekali tidak menyebut bahwa endpoint-nya lenyap.
+
+Sudah terlanjur beredar di PyPI 3.0.0, jadi dirilis sebagai **3.0.1**, bukan ditahan.
+
+- [x] `DEFAULT_AGENTLINK_URL` → `https://ssyubix.syuaibsyuaib.workers.dev`
+- [x] 4 test penjaga: nilai persis, larangan kembali ke host pensiun, bentuk origin
+      `https` telanjang, dan **kedua README wajib menyebut endpoint yang sama**.
+      Test terakhir **gagal di jalan pertama** dan langsung menangkap README basi.
+- [x] README: endpoint mati, 3 tool hilang (`room_local_summary`, `room_admin_add`,
+      `room_admin_remove`), contoh use case yang join lewat *nama* room tanpa token,
+      alur create→bagikan→join yang tak pernah dijelaskan, "Pekerjaan" yang tertinggal,
+      wrangler 4.71.0, dan URL badge Glama yang hanya jalan lewat 301.
+- [x] Bagian konfigurasi **OpenCode** — disebut 4 kali di README tapi tak pernah
+      dijelaskan. Formatnya beda di 3 hal: `mcp` bukan `mcpServers`, `command` berupa
+      array gabungan, `environment` bukan `env`.
+
+**Catatan rilis:** tag `v3.0.1` awalnya menunjuk commit yang masih berisi `3.0.0`,
+jadi workflow membangun 3.0.0 dan ditolak PyPI sebagai duplikat. Rilis akhirnya lewat
+`workflow_dispatch`. Tag lalu dipindahkan ke commit yang benar, setelah
+[PR #54](https://github.com/syuaibsyuaib/ssyubix/pull/54) menambahkan `skip-existing`
+supaya rilis ulang tidak gagal hanya karena versinya sudah terbit.
+
+---
+
+# Task: Semua teks jadi bahasa Inggris
+
+- [x] **UI web** — judul, label, tombol, empty state, error, nama tab, `aria-label`,
+      pengumuman pembaca layar. Format tanggal `id-ID` → `en-GB`, dan jamak dipilih
+      sesuai angka (tadinya "2 skill", "1 tasks").
+- [x] **Semua pesan relay & klien** — error validasi/otorisasi, penolakan capability
+      & task registry, ACK timeout, pesan retry queue, teks sambutan room, deskripsi
+      parameter tool MCP, dan panduan `ssyubix://guides/readme-first`.
+- [x] Komentar kode **tetap Indonesia**, mengikuti konvensi codebase.
+
+**Jebakan:** 3 assertion test ditulis sebagai **regex**, bukan string berkutip, jadi
+lolos dari penyaringan pertama dan baru ketahuan saat suite memerah.
+
+---
+
+# Task: Perbaikan dari pengujian nyata (Antigravity + OpenCode + Claude Code)
+
+Semua di bawah ini lahir dari **menjalankan** AgentLink lintas tiga app, bukan dari
+membaca kode.
+
+## `agent_count` selalu nol — bug sejak commit dashboard `11234c9`
+- [x] Field `agent_count` dideklarasikan tapi **tidak pernah ditulis** ke registry,
+      jadi selalu jatuh ke `?? 0`. Dashboard lama pun angkanya fiktif.
+- [x] Room DO kini melaporkan sendiri jumlahnya. Tiga keputusan menjaganya murah:
+      **nilai absolut** (bukan selisih, jadi galat tidak menumpuk saat putus koneksi
+      tidak bersih), menumpang **alarm debounce 5 detik** yang sudah ada (bukan jalur
+      join), dan **dilewati kalau angkanya tidak berubah**.
+- [x] Room perlu menyimpan ID-nya sendiri — DO tidak tahu ID-nya di luar konteks
+      request, padahal alarm butuh itu justru saat agent terakhir sudah keluar.
+
+## Oracle keberadaan room
+- [x] "Token salah" vs "room tidak ditemukan" adalah oracle: memastikan sebuah Room ID
+      **ada** tanpa perlu tokennya. Kini satu pesan seragam. Kasus "tanpa token" tetap
+      punya pesan sendiri, tapi diperiksa **sebelum** room dibaca.
+- [x] Perbandingan token pakai helper waktu-konstan.
+
+## UI berkedip tiap 20 detik
+- [x] `renderActiveTab` mengosongkan panel jadi "Loading…" tiap polling. Kini
+      penyegaran latar belakang melewati placeholder, dan `setBody` melewati penulisan
+      DOM bila markup-nya sama.
+- **Pengukuran pertama saya tidak sah**: pane browser di latar belakang,
+  `document.hidden` true, badan polling tidak pernah jalan — "tidak berkedip" saat itu
+  cuma berarti "tidak ada polling".
+
+## Capability tidak bisa diperbarui sebagian
+- [x] Docstring menjanjikan patch parsial dan `current_load` opsional; **keduanya
+      mustahil**. Validator sudah benar (`"key" in input`) — yang merusak adalah kedua
+      handler pesan yang menyusun ulang payload dengan **menyebut semua field**, jadi
+      field yang tidak dikirim tetap hadir bernilai `undefined` lalu ditolak.
+- [x] 3 test, termasuk kebalikannya: key yang **ada tapi undefined** harus tetap ditolak.
+- Dugaan saya soal bug ketiga (`capability_get_self` mengembalikan None) **salah** —
+  profilnya bersarang di kunci `agent`, saya membacanya di tingkat atas.
+
+## Semua agent di satu perangkat jadi `owner`
+- [x] Identitas stabil dikunci **hanya** oleh endpoint relay, jadi setiap app di satu
+      mesin membaca berkas yang sama — bukan tiga agent dengan satu alamat, melainkan
+      **satu identitas memakai tiga nama**. Relay mencocokkan kepemilikan lewat
+      identitas itu, jadi semuanya jadi owner.
+- [x] Identitas kini juga dikunci `AGENT_NAME`. Install tanpa `AGENT_NAME` memakai
+      jalur lama, jadi tidak ada identitas yang berubah diam-diam saat upgrade.
+- [x] Diuji dengan 3 proses terpisah berbagi state dir: pembuat `owner`, dua penggabung
+      `member`.
+- **Konsekuensi:** kepemilikan mengikuti `AGENT_NAME`. Ganti nama = identitas baru =
+  kehilangan owner atas room lama. Bisa dipulihkan: kembalikan nama, atau pin
+  `SSYUBIX_STABLE_AGENT_IDENTITY_ID`. Keduanya sudah diuji berhasil.
+
+## Admin sebagai himpunan kuasa (model WhatsApp, tanpa promosi otomatis)
+- [x] **Temuan:** peran `admin` selama ini **tidak memberi kuasa apa pun**. Dua-satunya
+      aksi yang dijaga peran menuntut *owner*, jadi admin sama saja dengan member.
+- [x] `room_admin_add` menerima `powers` opsional — kosongkan untuk mewariskan seluruh
+      kuasa, sebut sebagian untuk delegasi sempit. Himpunan dimulai `grant_admin` +
+      `revoke_admin`; ban/kick/rotasi token nanti tinggal menambah nilai.
+- [x] Tiga aturan: **tidak boleh memberi kuasa yang tidak dimiliki** (anti-eskalasi
+      lewat perantara), owner punya semua kuasa implisit & tak bisa dicopot,
+      pencopotan menghapus kuasanya sekaligus.
+- [x] Admin dari room lama **tidak punya kuasa** — persis yang label itu berikan
+      sebelumnya. Upgrade tidak boleh menyerahkan wewenang yang tak pernah dimiliki.
+- **Keputusan user:** tidak ada promosi otomatis. Admin tidak aktif adalah urusan room
+  itu sendiri. Di sinilah model berpisah dari WhatsApp, yang memilih anggota acak demi
+  menghindari grup tanpa admin.
+
+## Handle agent yang bisa dibaca manusia
+- [x] Nama agent tidak unik — di pengujian nyata muncul dua baris `claude-code-agent`
+      yang hanya bisa dibedakan lewat ID 8 karakter.
+- [x] Lobby kini memakai handle **hewan + warna + kata kerja** (`raven-indigo-charts`),
+      dengan nama asli diredam di bawahnya. ID mentah hilang dari kartu, tetap terlihat
+      saat agent diklik.
+- [x] Diturunkan dari **identitas stabil**, bukan `agent_id` — `agent_id` berganti tiap
+      sesi, jadi handle-nya akan berubah tiap reconnect dan tidak berguna diingat.
+      Nama agent sengaja bukan bahan, supaya dua app ber-`AGENT_NAME` sama tetap beda.
+- [x] 32 × 16 × 32 = 16.384 kombinasi; 1000 identitas acak → 963 handle unik. Bentrok
+      ditangani sufiks potongan `agent_id`.
+
+## Hasil validasi
+- Worker **52/52**, Python **47/47**, `wrangler deploy --dry-run` bersih.
+- Paket terbangun & terverifikasi dari PyPI sebagai `ssyubix-3.0.1`.
+
+---
+
+# Audit keamanan endpoint (19 Agu 2026)
+
+Diuji langsung ke production, bukan dibaca dari kode.
+
+| Permukaan | Hasil |
+|---|---|
+| `GET /` | halaman statis, nol pola rahasia |
+| `GET /info` | nama/versi/daftar endpoint, tanpa info akun |
+| `GET /rooms` | agregat saja |
+| `/capabilities/*`, `/tasks/*`, `WS /connect/*` | **403** tanpa token |
+| `POST /admin/prune-rooms` | **403** tanpa secret; GET → 404 |
+| `/.env`, `/wrangler.jsonc`, `/index.ts`, `/src/index.ts` | semua **404** |
+
+- **Isolasi antar-room diuji dua arah:** token room A ditolak di room B pada
+  capabilities, tasks, dan WebSocket.
+- **Tidak ada kebocoran data.**
+
+## Temuan
+- **`POST /rooms` tanpa autentikasi.** Dibuktikan: 15 room dibuat berurutan tanpa
+  kredensial, nol ditolak, tanpa pembatasan laju. Bukan kebocoran — tapi registry bisa
+  digelembungkan, dan registry itu **satu DO global** yang dilewati setiap join.
+  Penutup termurah: Cloudflare Rate Limiting di path itu.
+- **Bias modulo di `generateId`** — huruf A–D muncul ~14% lebih sering. Dampaknya
+  **0,02 bit dari 62**; higiene, bukan sesuatu yang perlu dikejar.
+
+---
+
+# Belum dikerjakan
+
+- [ ] [PR #55](https://github.com/syuaibsyuaib/ssyubix/pull/55) belum di-merge — berisi
+      seluruh perbaikan dari pengujian nyata di atas.
+- [ ] **Rate limiting `POST /rooms`** — satu-satunya endpoint tulis tanpa autentikasi.
+- [ ] **Storage DO yatim** dari 65 room yang dihapus: entri registry hilang, isinya
+      masih ada tapi tak terjangkau.
+- [ ] **Room probe `0V5OFE`** yang dibuat saat audit masih menghuni registry production.
+- [ ] **Handle agent masih dihitung di sisi tampilan.** Kalau ingin agent saling
+      memanggil lewat handle (`task_offer` ke `raven-indigo-charts`), perhitungannya
+      harus pindah ke relay supaya jadi identitas sah. Jauh lebih masuk akal sekarang,
+      karena handle-nya sudah stabil lintas reconnect.
+- [ ] **Kegagalan `versions upload`** tidak pernah diketahui penyebabnya — hanya
+      dihindari dengan mematikan build non-production. Masalahnya masih di sana kalau
+      preview mau dihidupkan lagi.
+- [ ] **Kepemilikan room tidak bisa dipindahkan.** Kalau perangkat owner rusak atau
+      cache identitasnya hilang, room yatim permanen. Tiga arah pernah dibahas:
+      transfer kepemilikan, owner cadangan, atau token pemilik terpisah.
