@@ -508,25 +508,68 @@
      * Pembeda diambil dari agent_id, bukan nomor urut, supaya slug tidak berpindah
      * hanya karena urutan daftar berubah.
      */
-    function buildAgentSlugs(agents) {
-      function base(a) {
-        var s = String(a.display_name || a.agent_id || '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
-        return s || 'agent';
+    // Tiga daftar berukuran pangkat dua supaya potongan bit hash memetakan rata.
+    // 32 x 16 x 32 = 16.384 kombinasi; cukup longgar untuk satu room, dan bentrok
+    // apa pun tetap ditangani di bawah.
+    var SLUG_ANIMALS = [
+      'otter', 'falcon', 'badger', 'heron', 'lynx', 'tapir', 'gecko', 'marten',
+      'ibis', 'panda', 'koala', 'raven', 'bison', 'cobra', 'egret', 'ferret',
+      'gopher', 'hyena', 'jackal', 'kestrel', 'lemur', 'moose', 'newt', 'ocelot',
+      'puffin', 'quail', 'rhino', 'stoat', 'toucan', 'walrus', 'weasel', 'osprey'
+    ];
+    var SLUG_COLOURS = [
+      'amber', 'azure', 'crimson', 'emerald', 'indigo', 'ivory', 'jade', 'lilac',
+      'maroon', 'olive', 'scarlet', 'sepia', 'teal', 'umber', 'violet', 'cobalt'
+    ];
+    var SLUG_VERBS = [
+      'builds', 'carries', 'charts', 'climbs', 'drafts', 'drifts', 'echoes', 'forges',
+      'gathers', 'guards', 'hunts', 'jumps', 'learns', 'listens', 'maps', 'mends',
+      'models', 'orbits', 'paints', 'plans', 'probes', 'reads', 'rows', 'scouts',
+      'sculpts', 'signals', 'sings', 'sorts', 'sparks', 'tracks', 'waits', 'writes'
+    ];
+
+    /** FNV-1a: kecil, deterministik, dan sebarannya cukup rata untuk keperluan ini. */
+    function hash32(str) {
+      var h = 2166136261;
+      for (var i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
       }
-      var counts = {};
+      return h >>> 0;
+    }
+
+    /**
+     * Handle yang bisa dibaca dan diingat manusia, misal `raven-indigo-charts`.
+     *
+     * Diturunkan dari identitas stabil, bukan agent_id: agent_id berganti tiap
+     * sesi, jadi memakainya berarti seekor agent berganti nama setiap reconnect —
+     * dan handle yang berubah-ubah tidak ada gunanya untuk diingat.
+     *
+     * Nama agent sendiri tidak dipakai sebagai bahan, supaya dua app yang kebetulan
+     * memakai AGENT_NAME sama tetap mendapat handle berbeda.
+     */
+    function buildAgentSlugs(agents) {
+      function triple(seed) {
+        var h = hash32(seed);
+        return SLUG_ANIMALS[h & 31]
+          + '-' + SLUG_COLOURS[(h >>> 5) & 15]
+          + '-' + SLUG_VERBS[(h >>> 9) & 31];
+      }
+      var seeds = {}, counts = {};
       agents.forEach(function (a) {
-        var b = base(a);
-        counts[b] = (counts[b] || 0) + 1;
+        var seed = a.stable_agent_identity_id || a.agent_id || '';
+        var s = triple(seed);
+        seeds[a.agent_id] = s;
+        counts[s] = (counts[s] || 0) + 1;
       });
       var slugs = {};
       agents.forEach(function (a) {
-        var b = base(a);
-        slugs[a.agent_id] = counts[b] > 1
-          ? b + '-' + String(a.agent_id || '').slice(0, 4).toLowerCase()
-          : b;
+        var s = seeds[a.agent_id];
+        // Dua sesi dari identitas yang sama memang menghasilkan handle yang sama;
+        // itu jujur, tapi barisnya tetap harus bisa dibedakan.
+        slugs[a.agent_id] = counts[s] > 1
+          ? s + '-' + String(a.agent_id || '').slice(0, 4).toLowerCase()
+          : s;
       });
       return slugs;
     }

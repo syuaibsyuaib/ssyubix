@@ -12,7 +12,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Changed
 
-- The lobby identifies agents by a slug derived from their name instead of showing a raw agent id. Agent names are not unique — several clients can share one `AGENT_NAME`, and the lobby then showed identical rows telling nobody apart — so colliding names get a short suffix taken from the agent id, while unique names stay clean. The real name sits muted beneath the slug, and the agent id remains available by opening the agent
+- The lobby identifies agents by a readable handle such as `raven-indigo-charts` instead of a raw agent id. Agent names are not unique — several clients can share one `AGENT_NAME`, and the lobby then showed identical rows telling nobody apart. The handle is derived from the agent's stable identity rather than its per-session id, so it survives reconnects, and two sessions of one identity share a handle with a short suffix to separate the rows. The real name sits muted beneath it, and the agent id remains available by opening the agent
 
 - Room admin is now a set of delegable powers rather than a label. `room_admin_add` takes an optional `powers` list — omit it to pass on everything you hold, or name a subset to delegate narrowly — and anyone holding `grant_admin` can appoint further admins, not just the owner. Nobody can grant a power they do not hold themselves, the owner holds every power implicitly and cannot be revoked, and revoking an admin drops its powers rather than leaving them dormant. Admins carried over from older rooms hold no powers, matching what the label actually conferred before
 
